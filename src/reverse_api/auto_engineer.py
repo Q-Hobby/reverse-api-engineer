@@ -32,7 +32,7 @@ from .agent_browser import (
 )
 from .engineer import ClaudeEngineer
 from .opencode_engineer import OpenCodeEngineer, debug_log, format_error
-from .utils import build_sdk_env, get_har_dir
+from .utils import build_sdk_env, build_sdk_settings, get_har_dir
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -254,6 +254,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 cwd=str(self.scripts_dir.parent.parent),
                 model=self.model,
                 env=build_sdk_env(),
+            **build_sdk_settings(),
                 stderr=self._handle_cli_stderr,
             )
         else:
@@ -266,6 +267,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 cwd=str(self.scripts_dir.parent.parent),
                 model=self.model,
                 env=build_sdk_env(),
+            **build_sdk_settings(),
                 stderr=self._handle_cli_stderr,
             )
 

@@ -14,9 +14,12 @@ Recommended for most users.
 ```json
 {
   "sdk": "claude",
-  "claude_code_model": "claude-sonnet-4-6"
+  "claude_code_model": "claude-sonnet-4-6",
+  "claude_setting_sources": []
 }
 ```
+
+Claude sessions ignore your own Claude Code setup (`CLAUDE.md`, hooks, plugins, permission rules, MCP servers), so it cannot change the agent. If `~/.claude/settings.json` provides your authentication (`apiKeyHelper`, or Bedrock, Vertex or proxy variables under `env`), set `claude_setting_sources` to the layers to load, e.g. `["user"]` or `["user", "project", "local"]`.
 
 ## OpenCode
 

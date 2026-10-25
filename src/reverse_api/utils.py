@@ -78,6 +78,28 @@ def build_sdk_env() -> dict[str, str]:
     return env
 
 
+_CLAUDE_SETTING_SOURCES = ("user", "project", "local")
+
+
+def build_sdk_settings() -> dict[str, Any]:
+    """ClaudeAgentOptions kwargs selecting which Claude Code settings the session loads.
+
+    Isolated by default: no filesystem settings and only the MCP servers RAE
+    passes, so the user's CLAUDE.md, hooks, plugins, MCP servers and permission
+    rules cannot change the agent. The ``claude_setting_sources`` config key
+    opts back into those layers; invalid values keep the session isolated.
+    """
+    try:
+        from .config import ConfigManager
+
+        sources = ConfigManager(get_config_path()).get("claude_setting_sources")
+    except Exception:
+        sources = None
+    if isinstance(sources, list) and sources and all(s in _CLAUDE_SETTING_SOURCES for s in sources):
+        return {"setting_sources": list(sources)}
+    return {"setting_sources": [], "strict_mcp_config": True}
+
+
 def is_context_overflow_error(message: str) -> bool:
     """Return True if an SDK error message means the context window overflowed.
 
@@ -178,6 +200,7 @@ async def _generate_folder_name_async(prompt: str) -> str:
         allowed_tools=[],  # No tools needed for simple text generation
         permission_mode="dontAsk",
         model="claude-haiku-4-5",
+        **build_sdk_settings(),
     )
 
     folder_name = ""

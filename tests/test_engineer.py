@@ -1103,3 +1103,27 @@ class TestSdkEnvWiring:
         assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == AUTOCOMPACT_PCT
         assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == AUTOCOMPACT_WINDOW
         assert env["CLAUDECODE"] == ""
+
+    @pytest.mark.asyncio
+    async def test_options_isolate_user_claude_settings(self, tmp_path):
+        eng = self._make_engineer(tmp_path)
+
+        mock_client = AsyncMock()
+
+        async def empty_receive():
+            return
+            yield
+
+        mock_client.receive_response = empty_receive
+
+        with patch("reverse_api.utils.get_config_path", return_value=tmp_path / "config.json"):
+            with patch("reverse_api.engineer.ClaudeAgentOptions") as mock_options:
+                with patch("reverse_api.engineer.ClaudeSDKClient") as mock_sdk:
+                    mock_sdk.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                    mock_sdk.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                    await eng.analyze_and_generate()
+
+        kwargs = mock_options.call_args.kwargs
+        assert kwargs["setting_sources"] == []
+        assert kwargs["strict_mcp_config"] is True

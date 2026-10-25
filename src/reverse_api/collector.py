@@ -18,7 +18,7 @@ from claude_agent_sdk import (
 from .collector_ui import CollectorUI
 from .messages import MessageStore
 from .pricing import calculate_cost
-from .utils import build_sdk_env, generate_folder_name, get_collected_dir
+from .utils import build_sdk_env, build_sdk_settings, generate_folder_name, get_collected_dir
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -113,6 +113,7 @@ class Collector:
             cwd=str(self._collected_dir),
             model=self.model,
             env=build_sdk_env(),
+            **build_sdk_settings(),
         )
 
         try:

@@ -12,6 +12,9 @@ DEFAULT_CONFIG = {
     "agent_browser_notes": "",  # extra instructions merged into agent-browser prompt / RAE_AGENT_BROWSER_NOTES env
     "agent_browser_npx_package": "agent-browser@0",
     "claude_code_model": "claude-sonnet-4-6",
+    # Claude Code setting layers ("user", "project", "local") loaded into Claude SDK sessions.
+    # [] isolates the agent from the user's own CLAUDE.md, hooks, plugins and MCP servers.
+    "claude_setting_sources": [],
     "collector_model": "claude-sonnet-4-6",  # Model for collector mode
     "cursor_model": "composer-2.5",  # Model id for Cursor SDK (see Cursor.models.list())
     # When True, local agents load broader Cursor setting layers (plugins/team) so WebFetch/WebSearch

@@ -595,6 +595,35 @@ class TestClaudeAutoEngineerAnalyze:
         assert "mcp__verification__report_client_verified" in options.allowed_tools
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent_provider", ["auto", "agent-browser"])
+    async def test_options_isolate_user_claude_settings(self, tmp_path, agent_provider):
+        eng = self._make_engineer(tmp_path, agent_provider=agent_provider)
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock()
+
+        async def mock_receive():
+            yield _sdk_result_message(result="Success")
+
+        mock_client.receive_response = mock_receive
+
+        with patch("reverse_api.utils.get_config_path", return_value=tmp_path / "config.json"):
+            with patch(
+                "reverse_api.auto_engineer.ensure_agent_browser_runtime",
+                return_value=MagicMock(ok=True, error=None, notices=()),
+            ):
+                with patch.object(eng, "_prompt_follow_up", new=AsyncMock(return_value=None)):
+                    with patch("reverse_api.auto_engineer.ClaudeSDKClient") as mock_sdk:
+                        mock_sdk.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                        mock_sdk.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                        await eng.analyze_and_generate()
+
+        options = mock_sdk.call_args.kwargs["options"]
+        assert options.setting_sources == []
+        assert options.strict_mcp_config is True
+
+    @pytest.mark.asyncio
     async def test_result_with_usage(self, tmp_path):
         """Result with usage metadata calculates cost."""
         eng = self._make_engineer(tmp_path)

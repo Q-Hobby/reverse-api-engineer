@@ -1,5 +1,6 @@
 """Tests for utils.py - Utility functions."""
 
+import json
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -867,3 +868,52 @@ class TestIsContextOverflowError:
 
         assert not is_context_overflow_error("Unknown error")
         assert not is_context_overflow_error("rate limit exceeded")
+
+
+class TestBuildSdkSettings:
+    """Claude SDK sessions are isolated from the user's Claude Code setup by default."""
+
+    ISOLATED = {"setting_sources": [], "strict_mcp_config": True}
+
+    def _settings(self, tmp_path, config=None):
+        from reverse_api.utils import build_sdk_settings
+
+        config_path = tmp_path / "config.json"
+        if config is not None:
+            config_path.write_text(json.dumps(config), encoding="utf-8")
+        with patch("reverse_api.utils.get_config_path", return_value=config_path):
+            return build_sdk_settings()
+
+    def test_isolated_by_default(self, tmp_path):
+        assert self._settings(tmp_path) == self.ISOLATED
+
+    def test_config_opts_back_into_user_settings(self, tmp_path):
+        settings = self._settings(tmp_path, {"claude_setting_sources": ["user", "project", "local"]})
+        assert settings == {"setting_sources": ["user", "project", "local"]}
+
+    @pytest.mark.parametrize("value", [[], None, "user", ["all"], ["user", 1]])
+    def test_invalid_values_stay_isolated(self, tmp_path, value):
+        assert self._settings(tmp_path, {"claude_setting_sources": value}) == self.ISOLATED
+
+    @pytest.mark.asyncio
+    async def test_folder_name_session_is_isolated(self, tmp_path):
+        from reverse_api.utils import _generate_folder_name_async
+
+        mock_client = AsyncMock()
+
+        async def empty_receive():
+            return
+            yield
+
+        mock_client.receive_response = empty_receive
+
+        with patch("reverse_api.utils.get_config_path", return_value=tmp_path / "config.json"):
+            with patch("claude_agent_sdk.ClaudeSDKClient") as mock_sdk:
+                mock_sdk.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_sdk.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                await _generate_folder_name_async("Get Apple jobs API")
+
+        options = mock_sdk.call_args.kwargs["options"]
+        assert options.setting_sources == []
+        assert options.strict_mcp_config is True
