@@ -9,18 +9,22 @@ Agent mode runs an AI loop. **`auto`** and **`chrome-mcp`** attach browser autom
 
 ### `chrome-mcp` (default)
 
+Default for new configurations. An existing `~/.reverse-api/config.json` keeps
+the provider it already stores.
+
 Drives your **real Chrome browser** via
 [Chrome DevTools MCP](https://www.npmjs.com/package/chrome-devtools-mcp), so
 existing sessions, cookies, and auth from your daily Chrome profile are
 available. The agent opens its own tab and reads traffic through MCP tools;
-no HAR file is saved.
+no HAR file is saved, so `engineer <run_id>` cannot regenerate these runs.
 
-**Requirements:**
+**Requirements for headed runs:**
 
 - Chrome 146+, open, with auto-connect enabled at `chrome://inspect/#remote-debugging`
 - Node.js 20.19+
 
-Reverse API Engineer checks auto-connect before launching (`agent --dry-run`
+Reverse API Engineer checks that Chrome's remote debugging port is reachable
+before launching (it does not check the Chrome or Node version) (`agent --dry-run`
 reports it as `chrome-mcp:auto-connect`) and stops with setup steps if Chrome
 is not reachable. With `--headless`, Chrome DevTools MCP starts its own
 headless Chrome instead, without your sessions.

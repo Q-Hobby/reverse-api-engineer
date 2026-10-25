@@ -684,6 +684,8 @@ def _build_engineer_payload(
         final_error_obj = "engineering produced no result"
     error_str = _format_error_message(final_error_obj)
     error_kind = _classify_error(final_error_obj, default=error_kind_hint) if final_error_obj else None
+    if error is None and inner_error is not None and result.get("error_kind"):
+        error_kind = result["error_kind"]
     return {
         "schema_version": AGENT_JSON_SCHEMA_VERSION,
         "status": "error" if error_str else "ok",
@@ -2423,7 +2425,7 @@ def engineer(
     machine_output = as_json or json_stream
 
     if not machine_output:
-        run_engineer(
+        result = run_engineer(
             run_id,
             prompt=main_prompt,
             additional_instructions=additional,
@@ -2432,6 +2434,8 @@ def engineer(
             is_fresh=fresh,
             interactive=interactive,
         )
+        if isinstance(result, dict) and result.get("error_kind") == "misuse":
+            sys.exit(2)
         return
 
     from .json_stream import make_json_stream_sink
@@ -2465,6 +2469,8 @@ def engineer(
             )
 
         _write_json_stdout(real_stdout, payload, json_stream=json_stream)
+    if payload["error_kind"] == "misuse":
+        sys.exit(2)
     sys.exit(0 if payload["status"] == "ok" else 1)
 
 
@@ -2500,6 +2506,16 @@ def run_engineer(
             paths = run_data.get("paths", {})
             har_dir = Path(paths.get("har_dir", get_har_dir(run_id, None)))
             har_path = har_dir / "recording.har"
+            if not har_path.exists():
+                if run_data.get("mode") == "chrome-mcp":
+                    message = (
+                        f"run {run_id} was captured with chrome-mcp, which saves no HAR, so engineer cannot "
+                        "regenerate it; run `agent` again, or set agent_provider to \"auto\" to keep a HAR"
+                    )
+                else:
+                    message = f"run {run_id} has no HAR at {har_path}"
+                console.print(f" [red]error:[/red] {message}")
+                return {"error": message, "error_kind": "misuse", "error_reported": True}
 
     sdk = config_manager.get("sdk", "claude")
     enable_sync = config_manager.get("real_time_sync", True)

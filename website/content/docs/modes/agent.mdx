@@ -70,12 +70,18 @@ Pick the provider in `/settings` then "agent provider".
   <Tab value="chrome-mcp (default)">
     Drives your **real Chrome** browser via
     [Chrome DevTools MCP](https://www.npmjs.com/package/chrome-devtools-mcp),
-    with your existing sessions, cookies, and auth. No HAR file is saved.
-    `--headless` starts a separate headless Chrome instead.
+    with your existing sessions, cookies, and auth. Default for new
+    configurations. No HAR file is saved, so `engineer <run_id>` cannot
+    regenerate these runs. `--headless` starts a separate headless Chrome
+    instead, without your sessions.
 
-    **Requirements:**
+    **Requirements for headed runs:**
     - Chrome 146+, open, with auto-connect enabled at `chrome://inspect/#remote-debugging`
     - Node.js 20.19+
+
+    If Chrome is not reachable, the run stops before launching with setup
+    steps and `error_kind: config_invalid`; `agent --dry-run` reports the same
+    check.
   </Tab>
   <Tab value="auto">
     **Playwright MCP** browser automation with your configured SDK. Combines

@@ -100,3 +100,79 @@ def test_agent_json_fails_fast_without_auto_connect(tmp_path):
     assert payload["error"].startswith("not enabled; ")
     assert payload["error_kind"] == "config_invalid"
     sessions.add_run.assert_not_called()
+
+
+class TestChromeUserDataDir:
+    def test_macos(self, monkeypatch, tmp_path):
+        from reverse_api import chrome_mcp
+
+        monkeypatch.setattr(chrome_mcp.sys, "platform", "darwin")
+        monkeypatch.setattr(chrome_mcp.Path, "home", lambda: tmp_path)
+        assert chrome_mcp.chrome_user_data_dir() == tmp_path / "Library" / "Application Support" / "Google" / "Chrome"
+
+    def test_windows(self, monkeypatch, tmp_path):
+        from reverse_api import chrome_mcp
+
+        monkeypatch.setattr(chrome_mcp.sys, "platform", "win32")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        assert chrome_mcp.chrome_user_data_dir() == tmp_path / "Google" / "Chrome" / "User Data"
+        monkeypatch.delenv("LOCALAPPDATA")
+        assert chrome_mcp.chrome_user_data_dir() is None
+
+    def test_linux(self, monkeypatch, tmp_path):
+        from reverse_api import chrome_mcp
+
+        monkeypatch.setattr(chrome_mcp.sys, "platform", "linux")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+        assert chrome_mcp.chrome_user_data_dir() == tmp_path / "google-chrome"
+
+
+def test_unreadable_port_file_is_not_reported_as_disabled(tmp_path):
+    (tmp_path / "DevToolsActivePort").mkdir()
+    status = check_auto_connect(tmp_path)
+    assert not status.ok
+    assert "could not read" in status.reason
+
+
+def test_interactive_run_prints_setup_once(tmp_path, capsys):
+    from reverse_api.cli import run_auto_capture
+
+    with patch("reverse_api.cli.config_manager") as cm, \
+         patch("reverse_api.chrome_mcp.check_auto_connect", return_value=AutoConnectStatus(False, "not enabled")), \
+         patch("reverse_api.cli.session_manager") as sessions:
+        cm.get.side_effect = _config(tmp_path)
+        result = run_auto_capture(prompt="fetch jobs", url="https://example.com", agent_provider="chrome-mcp")
+
+    out = capsys.readouterr().out
+    assert result["error"].startswith("not enabled; ")
+    assert result["error_kind"] == "config_invalid" and result["error_reported"] is True
+    assert out.count("chrome://inspect/#remote-debugging") == 1
+    sessions.add_run.assert_not_called()
+
+
+class TestEngineerHarlessRuns:
+    def _invoke(self, tmp_path, mode, *args):
+        from reverse_api.cli import engineer as engineer_cmd
+
+        run = {"prompt": "fetch jobs", "mode": mode, "paths": {"har_dir": str(tmp_path / "har")}}
+        with patch("reverse_api.cli.session_manager") as sessions, \
+             patch("reverse_api.cli.run_reverse_engineering") as engine:
+            sessions.get_run.return_value = run
+            result = CliRunner().invoke(engineer_cmd, ["abc123", *args])
+        engine.assert_not_called()
+        return result
+
+    def test_chrome_mcp_run_is_rejected_as_misuse(self, tmp_path):
+        result = self._invoke(tmp_path, "chrome-mcp", "--json")
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert result.exit_code == 2
+        assert payload["error_kind"] == "misuse"
+        assert "captured with chrome-mcp" in payload["error"]
+
+    def test_text_mode_exits_2(self, tmp_path):
+        assert self._invoke(tmp_path, "chrome-mcp").exit_code == 2
+
+    def test_other_run_without_har_names_the_path(self, tmp_path):
+        result = self._invoke(tmp_path, "auto", "--json")
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        assert payload["error"] == f"run abc123 has no HAR at {tmp_path / 'har' / 'recording.har'}"

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **chrome-mcp is the default agent provider** for new configurations. Existing `~/.reverse-api/config.json` files keep the provider they already store; switch with `/settings` or `"agent_provider": "auto"` for Playwright MCP with HAR recording.
 - Headed chrome-mcp runs check Chrome auto-connect (`DevToolsActivePort` plus an open port) before launching and fail with setup steps and `error_kind: config_invalid` instead of starting the agent. `agent --dry-run` reports the same check as an error.
+- `engineer <run_id>` on a run without a HAR stops before starting a model session: chrome-mcp runs get an explanation and `error_kind: misuse` with exit code 2, other runs name the missing HAR path.
 - Pin `chrome-devtools-mcp` to the 1.12 line and update the chrome-mcp prompt for its `pageId` tool arguments; the agent now opens its own tab.
 
 ### Fixed

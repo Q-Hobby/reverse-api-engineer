@@ -73,7 +73,9 @@ Plug an agent into the loop and it browses on your behalf. Three providers
 ship today:
 
 - **Chrome DevTools MCP** *(default)*: drives your **real Chrome** with existing
-  sessions, cookies, and auth; `--headless` starts a separate headless Chrome.
+  sessions, cookies, and auth. Headed runs need Chrome 146+ with remote
+  debugging enabled at `chrome://inspect/#remote-debugging`; `--headless`
+  starts a separate headless Chrome.
 - **Playwright MCP** (`auto`): self-contained browser automation that records a
   HAR; add `--headless` for CI or machines without a display.
 - **agent-browser**: delegates browsing to the Vercel `agent-browser` CLI
