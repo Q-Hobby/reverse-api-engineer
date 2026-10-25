@@ -17,6 +17,7 @@ from claude_agent_sdk import (
     ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
     create_sdk_mcp_server,
     tool,
 )
@@ -181,6 +182,8 @@ class ClaudeEngineer(BaseEngineer):
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
                         last_tool_name = block.name
+                        if tool_id := getattr(block, "id", None):
+                            self._tool_names[tool_id] = block.name
                         self.ui.tool_start(block.name, block.input)
                         self.message_store.save_tool_start(block.name, block.input)
                     elif isinstance(block, ToolResultBlock):
@@ -217,6 +220,17 @@ class ClaudeEngineer(BaseEngineer):
                         self.ui.thinking(block.text)
                         self.message_store.save_thinking(block.text)
 
+            elif isinstance(message, UserMessage) and getattr(self.ui, "shows_tool_results", False) and isinstance(message.content, list):
+                for block in message.content:
+                    if isinstance(block, ToolResultBlock):
+                        output = block.content
+                        text = (
+                            "\n".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in output)
+                            if isinstance(output, list)
+                            else str(output or "")
+                        )
+                        self.ui.tool_result(self._tool_names.get(block.tool_use_id, "Tool"), bool(block.is_error), text)
+
             elif isinstance(message, ResultMessage):
                 if message.is_error:
                     error_text = message.result or "Unknown error"
@@ -252,17 +266,7 @@ class ClaudeEngineer(BaseEngineer):
                             )
                         )
                         self.usage_metadata["estimated_cost_usd"] = cost
-
-                        self.ui.console.print("  [dim]Usage:[/dim]")
-                        if input_tokens > 0:
-                            self.ui.console.print(f"  [dim]  input: {input_tokens:,} tokens[/dim]")
-                        if cache_creation_tokens > 0:
-                            self.ui.console.print(f"  [dim]  cache creation: {cache_creation_tokens:,} tokens[/dim]")
-                        if cache_read_tokens > 0:
-                            self.ui.console.print(f"  [dim]  cache read: {cache_read_tokens:,} tokens[/dim]")
-                        if output_tokens > 0:
-                            self.ui.console.print(f"  [dim]  output: {output_tokens:,} tokens[/dim]")
-                        self.ui.console.print(f"  [dim]  total cost: ${cost:.4f}[/dim]")
+                        self.ui.usage(self.usage_metadata)
 
                     result: dict[str, Any] = {
                         "script_path": script_path,

@@ -103,8 +103,12 @@ class BaseEngineer(ABC):
         else:
             self.scripts_dir = get_scripts_dir(run_id, output_dir)
 
-        self.ui: ClaudeUI | OpenCodeUI = ClaudeUI(verbose=verbose)
+        from .repl.bridge import active
+
+        bridge = active()
+        self.ui: ClaudeUI | OpenCodeUI = bridge.ui() if bridge else ClaudeUI(verbose=verbose)  # type: ignore[assignment]
         self.usage_metadata: dict[str, Any] = {}
+        self._tool_names: dict[str, str] = {}  # tool_use_id to tool name, to label results
         self.message_store = MessageStore(run_id, output_dir)
         self.enable_sync = enable_sync
         self.sdk = sdk
@@ -236,6 +240,12 @@ class BaseEngineer(ABC):
         Returns:
             Dict mapping question text to user's answer string.
         """
+        from .repl.bridge import active
+
+        bridge = active()
+        if bridge is not None:
+            return await bridge.ask(questions)
+
         answers: dict[str, str] = {}
 
         self.ui.console.print()
@@ -374,6 +384,11 @@ class BaseEngineer(ABC):
             return None
         # Ensure all files are synced locally before waiting for user input
         self.flush_sync()
+        from .repl.bridge import active
+
+        bridge = active()
+        if bridge is not None:
+            return await bridge.follow_up()
         self.ui.console.print()
         self.ui.console.print(f"  [{THEME_PRIMARY}]─[/{THEME_PRIMARY}] [dim]type a follow-up or press Enter to finish[/dim]")
         try:

@@ -134,7 +134,10 @@ class CursorEngineer(BaseEngineer):
         self.cursor_web_search = cursor_web_search
         self.cursor_setting_sources = cursor_setting_sources
         vb = self.ui.verbose
-        self.ui = CursorStreamUI(self, verbose=vb)
+        from .repl.bridge import CursorLedgerUI, active
+
+        bridge = active()
+        self.ui = CursorLedgerUI(bridge, self, verbose=vb) if bridge else CursorStreamUI(self, verbose=vb)  # type: ignore[assignment]
         self._cursor_thinking_acc = ""
         self._cursor_assistant_acc = ""
         # Cursor streams several `tool_call`/running deltas per call as the args

@@ -1,0 +1,612 @@
+"""The full-screen interactive session: header, conversation, input bar fixed to the bottom.
+
+Agent and engineer runs on the Claude, Copilot and Cursor SDKs stream into the conversation
+through the bridge. Modes not ported yet (manual, collector, OpenCode) suspend the app and run
+in the classic interface, then hand back.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import os
+import re
+import subprocess
+import sys
+import threading
+import time
+import warnings
+from collections.abc import Callable
+from concurrent.futures import Future
+from typing import IO, Any, cast
+from urllib.parse import unquote, urlparse
+
+import click
+from prompt_toolkit.application import Application, run_in_terminal
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
+from prompt_toolkit.history import InMemoryHistory
+from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent, merge_key_bindings
+from prompt_toolkit.key_binding.defaults import load_key_bindings
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
+from prompt_toolkit.lexers import Lexer
+from prompt_toolkit.output import create_output
+from prompt_toolkit.styles import Style
+from rich.console import Console, RenderableType
+from rich.text import Text
+
+from .bridge import Bridge, activate
+from .style import DIM, INK, SKY, THEME, height, width
+from .transcript import Raw, Transcript, TranscriptControl, TranscriptWriter
+from .view import EFFORTS, LedgerView, Picker, SessionState, model_label
+
+MODES = {
+    "agent": "the agent browses the site and writes the client",
+    "manual": "you browse, rae records the traffic",
+    "engineer": "re-engineer a past run",
+    "collector": "collect data into json and csv",
+}
+EFFORT_NOTES = {
+    "low": "fastest, fewer tool calls",
+    "medium": "lighter reasoning, Opus 5.5's default",
+    "high": "deep reasoning, the default for most models",
+    "xhigh": "deeper reasoning on hard captures",
+    "max": "most thorough, slowest and priciest",
+}
+COMMANDS = {
+    "/new": "start a new capture",
+    "/model": "choose the model",
+    "/effort": "how hard the agent thinks",
+    "/mode": "choose the mode",
+    "/settings": "all settings",
+    "/history": "past runs",
+    "/messages": "messages of a past run: /messages <run id>",
+    "/output": "everything from this session, unfolded",
+    "/open": "open the latest client",
+    "/clear": "clear the conversation",
+    "/help": "keys and commands",
+    "/exit": "quit rae",
+}
+URL_IN_PROMPT = re.compile(r"https?://([^/\s]+)|\b((?:[\w-]+\.)+(?:com|io|co|ch|de|fr|uk|org|net|dev|ai|app|so|sh|eu|jobs))\b")
+
+
+def open_target(target: str) -> None:
+    """Open a clicked link: files with the system's default app, URLs in the browser."""
+    path = unquote(urlparse(target).path) if target.startswith("file://") else target
+    if sys.platform == "win32":
+        os.startfile(path)  # type: ignore[attr-defined]  # noqa: S606
+        return
+    opener = "open" if sys.platform == "darwin" else "xdg-open"
+    subprocess.Popen([opener, path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # noqa: S603
+
+
+def host_in(prompt: str) -> str:
+    m = URL_IN_PROMPT.search(prompt)
+    return (m.group(1) or m.group(2) or "") if m else ""
+
+
+class InputLexer(Lexer):
+    """Highlights /commands and URLs while typing."""
+
+    def __init__(self, st: SessionState) -> None:
+        self.st = st
+
+    def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
+        def get_line(n: int) -> StyleAndTextTuples:
+            line = document.lines[n]
+            frags: StyleAndTextTuples = []
+            pos = 0
+            for m in re.finditer(r"(^/\w*)|(https?://\S+)|(\b[\w.-]+\.(?:com|ch|io|dev|org|net|ai|co)\S*)", line):
+                frags.append(("", line[pos : m.start()]))
+                frags.append((f"fg:{self.st.accent} bold" if m.group(1) else f"fg:{SKY} underline", m.group(0)))
+                pos = m.end()
+            frags.append(("", line[pos:]))
+            return frags
+
+        return get_line
+
+
+class Session:
+    def __init__(self) -> None:
+        from .. import cli
+
+        self.cli = cli
+        sdk = cli.config_manager.get("sdk", "claude")
+        self.st = SessionState(sdk=sdk, model=cli.default_model_for_configured_sdk(sdk), effort=cli.config_manager.get("claude_effort"))
+        self.transcript = Transcript(on_link=open_target)
+        self.view = LedgerView(self.st, self.transcript)
+        self.buf = Buffer(multiline=False, history=InMemoryHistory())
+        self.bridge = Bridge(self.view, self.invalidate, self.ask_user)
+        self.app: Application | None = None
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.real_out, self.real_err = sys.stdout, sys.stderr
+        # Stray prints read as notices: dim and indented like the rest of the ledger.
+        self.capture = TranscriptWriter(self._captured, plain_style=f"fg:{DIM}", indent="   ")
+
+    # plumbing
+
+    def invalidate(self) -> None:
+        if self.app is not None:
+            self.app.invalidate()
+
+    def _captured(self, raw: Raw) -> None:
+        self.view.out(raw)
+        self.invalidate()
+
+    def call_soon(self, fn: Callable[[], None]) -> None:
+        if self.loop is not None:
+            self.loop.call_soon_threadsafe(fn)
+
+    def ask_user(self, spec: dict[str, Any]) -> Future:
+        """Show an agent question in the bar; the future resolves with the answer, or an empty string if skipped."""
+        fut: Future = Future()
+
+        def show() -> None:
+            options = spec.get("options") or []
+            if options:
+                items = [(label, label, desc) for label, desc in options] + [("", "something else", "type your own answer")]
+
+                def picked(value: str | None) -> None:
+                    if value == "":
+                        self.st.question = fut
+                    elif not fut.done():
+                        fut.set_result(value or "")
+
+                self.st.picker = Picker(str(spec.get("question", "")), items, None, picked)
+            else:
+                self.st.question = fut
+            self.invalidate()
+
+        self.call_soon(show)
+        return fut
+
+    # commands
+
+    def palette_items(self) -> list[tuple[str, str]]:
+        typed = self.buf.text.strip().lower()
+        return [(c, d) for c, d in COMMANDS.items() if c.startswith(typed)]
+
+    def open_picker(self, title: str, items: list[tuple[str, str, str]], current: str | None, on_pick: Callable[[str | None], None]) -> None:
+        index = next((i for i, (v, _, _) in enumerate(items) if v == current), 0)
+        self.st.picker = Picker(title, items, current, on_pick, index)
+
+    def set_model(self, value: str | None) -> None:
+        if not value or value == self.st.model:
+            return
+        old = self.st.model_label
+        self.st.model = value
+        self.cli.config_manager.set("claude_code_model", value)
+        self.view.event("model", old, self.st.model_label)
+
+    def set_effort(self, value: str | None) -> None:
+        if not value or value == self.st.effort_label:
+            return
+        old = self.st.effort_label
+        self.st.effort = value
+        self.cli.config_manager.set("claude_effort", value)
+        self.view.event("effort", old, value)
+
+    def set_mode(self, value: str | None) -> None:
+        if value and value != self.st.mode:
+            old, self.st.mode = self.st.mode, value
+            self.view.event("mode", old, value)
+
+    def cycle_effort(self) -> None:
+        level = EFFORTS.index(self.st.effort_label) if self.st.effort_label in EFFORTS else 2
+        value = EFFORTS[(level + 1) % len(EFFORTS)]
+        self.st.effort = value
+        self.cli.config_manager.set("claude_effort", value)
+
+    def run_command(self, text: str) -> None:
+        cmd, _, arg = text.partition(" ")
+        cmd, arg = cmd.lower(), arg.strip()
+        st, view = self.st, self.view
+        if cmd == "/exit":
+            self.quit()
+        elif cmd == "/new":
+            if st.waiting:
+                self.bridge.follow_ups.put(None)
+            elif st.running:
+                view.notice("a run is in progress · esc stops it")
+        elif cmd == "/help":
+            view.notice("enter sends · esc stops a run · shift+tab mode · ctrl+e effort · ctrl+o full output · ctrl+d quits")
+            view.notice("pageup/pagedown or the mouse wheel scroll · end jumps to the latest · click a file or URL to open it")
+        elif cmd == "/model":
+            if st.sdk != "claude":
+                view.notice(f"the {st.sdk} model is set in /settings")
+            else:
+                from ..tui import get_model_choices
+
+                choices = [(c["value"], model_label(c["value"]), c["name"].split("[")[-1].rstrip("]").lower()) for c in get_model_choices()]
+                self.open_picker("choose a model", choices, st.model, self.set_model)
+        elif cmd == "/effort":
+            self.open_picker("how hard the agent thinks", [(e, e, EFFORT_NOTES[e]) for e in EFFORTS], st.effort_label, self.set_effort)
+        elif cmd == "/mode":
+            self.open_picker("choose a mode", [(m, m, d) for m, d in MODES.items()], st.mode, self.set_mode)
+        elif cmd == "/output":
+            self.show_output()
+        elif cmd == "/open":
+            if st.last_client:
+                open_target(st.last_client.as_uri())
+            else:
+                view.notice("no client yet")
+        elif cmd == "/clear":
+            self.transcript.clear()
+            st.scroll = 0
+            st.folded = False
+        elif cmd == "/settings":
+            self.classic(lambda: self.cli.handle_settings(), then=self.reload_settings)
+        elif cmd == "/history":
+            self.classic(lambda: self.cli.handle_history())
+        elif cmd == "/messages":
+            if arg:
+                self.classic(lambda: self.cli.handle_messages(arg))
+            else:
+                view.notice("usage: /messages <run id>")
+        else:
+            view.notice(f"unknown command {cmd} · / lists them")
+        self.invalidate()
+
+    def reload_settings(self) -> None:
+        cfg = self.cli.config_manager
+        cfg.load()
+        self.st.sdk = cfg.get("sdk", "claude")
+        self.st.model = self.cli.default_model_for_configured_sdk(self.st.sdk)
+        self.st.effort = cfg.get("claude_effort")
+
+    # runs
+
+    def submit(self, text: str) -> None:
+        st = self.st
+        if isinstance(st.question, Future):
+            fut, st.question = st.question, None
+            if not fut.done():
+                fut.set_result(text)
+            return
+        if not text:
+            return
+        if text.startswith("/"):
+            self.run_command(text)
+            return
+        st.scroll = 0
+        if st.running:
+            st.queue.append(text)
+        elif st.waiting:
+            self.view.user(text)
+            self.bridge.follow_ups.put(text)
+        else:
+            self.start(text)
+        self.invalidate()
+
+    def start(self, prompt: str) -> None:
+        st, cli = self.st, self.cli
+        st.host, st.client_name = host_in(prompt), ""
+        st.started, st.running, st.verb, st.kind = time.time(), True, "starting", "other"
+        self.view.user(prompt)
+        model = st.model if st.sdk == "claude" else None
+        if st.mode == "manual":
+            self.classic(lambda: cli.run_manual_capture(prompt=prompt, url=None, reverse_engineer=True, model=model))
+        elif st.mode == "collector":
+            self.classic(lambda: cli.run_collector(prompt=prompt, model=None))
+        elif st.sdk == "opencode":
+            run = (lambda: self.engineer(prompt, model)) if st.mode == "engineer" else (lambda: cli.run_agent_capture(prompt=prompt, model=model))
+            self.classic(run)
+        elif st.mode == "engineer":
+            self.work(lambda: self.engineer(prompt, model))
+        else:
+            self.work(lambda: cli.run_agent_capture(prompt=prompt, model=model))
+
+    def engineer(self, text: str, model: str | None) -> dict[str, Any] | None:
+        """A known run id re-engineers that run; anything else is an instruction for the latest run."""
+        sm = self.cli.session_manager
+        if sm.get_run(text):
+            return self.cli.run_engineer(text, model=model)
+        latest = sm.get_history(limit=1)
+        if not latest:
+            self.view.error("no runs yet · start one in agent or manual mode")
+            return None
+        return self.cli.run_engineer(latest[0]["run_id"], model=model, additional_instructions=text)
+
+    def work(self, fn: Callable[[], Any]) -> None:
+        """Run an engine in a worker thread; its UI calls stream into the conversation through the bridge."""
+
+        def target() -> None:
+            result: Any = None
+            try:
+                result = fn()
+            except BaseException as exc:  # noqa: BLE001  # the engine thread must never take the app down
+                self.view.error(str(exc) or type(exc).__name__)
+            finally:
+                self.finish(result)
+
+        threading.Thread(target=target, name="rae-run", daemon=True).start()
+
+    def finish(self, result: Any) -> None:
+        st = self.st
+        self.bridge.flush_card()
+        if isinstance(result, dict) and result.get("error") and not result.get("error_reported"):
+            if result["error"] in ("interrupted", "Agent analysis cancelled."):
+                self.view.interrupted()
+            else:
+                self.view.error(str(result["error"]))
+        st.running = st.waiting = False
+        self.bridge.task = None
+        while not self.bridge.follow_ups.empty():
+            self.bridge.follow_ups.get_nowait()
+        if st.queue:
+            nxt = st.queue.pop(0)
+            self.call_soon(lambda: self.start(nxt))
+        self.invalidate()
+
+    def classic(self, fn: Callable[[], Any], then: Callable[[], None] | None = None) -> None:
+        """Suspend the app and run fn in the plain terminal, for flows the full-screen view does not cover yet."""
+
+        def call() -> None:
+            sys.stdout, sys.stderr = self.real_out, self.real_err
+            try:
+                fn()
+            except (KeyboardInterrupt, click.Abort):
+                pass
+            finally:
+                sys.stdout = sys.stderr = cast(IO[str], self.capture)
+                self.st.running = False
+                if then:
+                    then()
+
+        asyncio.ensure_future(run_in_terminal(call))
+
+    def stop(self) -> None:
+        st = self.st
+        if st.running:
+            st.queue.clear()
+            if not self.bridge.cancel():
+                self.view.notice("this run cannot be stopped from here")
+        elif st.waiting:
+            self.bridge.follow_ups.put(None)
+
+    def show_output(self) -> None:
+        items = list(self.transcript.full)
+
+        def page() -> None:
+            buf = io.StringIO()
+            console = Console(file=buf, force_terminal=True, color_system="truecolor", width=width(), highlight=False, theme=THEME)
+            for item in items:
+                console.print(Text.from_ansi(item.text) if isinstance(item, Raw) else item)
+            sys.stdout = self.real_out
+            try:
+                click.echo_via_pager(buf.getvalue(), color=True)
+            finally:
+                sys.stdout = cast(IO[str], self.capture)
+
+        asyncio.ensure_future(run_in_terminal(page))
+
+    def quit(self) -> None:
+        if self.st.running:
+            self.bridge.cancel()
+        if self.st.waiting:
+            self.bridge.follow_ups.put(None)
+        if self.app is not None:
+            self.app.exit()
+
+    # layout
+
+    def transcript_view(self, window: Window) -> FormattedText:
+        """The header (animated while visible) and the conversation, sliced to the window."""
+        st = self.st
+        lines = self.view.header_rows(theta=time.time() * 0.35) + self.transcript.lines()
+        rows = window.render_info.window_height if window.render_info else height() - 5
+        st.scroll = max(0, min(st.scroll, len(lines) - rows))
+        end = len(lines) - st.scroll
+        out: list[Any] = []
+        for i, line in enumerate(lines[max(0, end - rows) : end]):
+            out += ([("", "\n")] if i else []) + line
+        return FormattedText(out)
+
+    def build(self) -> Application:
+        st, view, buf = self.st, self.view, self.buf
+        palette_open = Condition(lambda: st.picker is None and buf.text.startswith("/") and " " not in buf.text)
+        picker_open = Condition(lambda: st.picker is not None)
+
+        def palette_view() -> FormattedText:
+            items = self.palette_items()
+            st.palette_index = min(st.palette_index, max(0, len(items) - 1))
+            return view.menu([(c, d, i == st.palette_index, False) for i, (c, d) in enumerate(items)])
+
+        def picker_view() -> FormattedText:
+            p = st.picker
+            if p is None:
+                return FormattedText([])
+            return view.menu([(label, desc, i == p.index, value == p.current) for i, (value, label, desc) in enumerate(p.items)], title=p.title)
+
+        transcript_window: Window = Window(wrap_lines=False)
+        transcript_window.content = TranscriptControl(lambda: self.transcript_view(transcript_window), self.scroll)
+        kb = self.bindings(palette_open, picker_open)
+
+        def text_window(fn: Callable[[], Any]) -> Window:
+            return Window(FormattedTextControl(fn), dont_extend_height=True)
+
+        placeholder = ConditionalProcessor(
+            AfterInput("describe the API you want, e.g. all open jobs on jobs.ashbyhq.com/openai", style=f"fg:{DIM} italic"),
+            filter=Condition(lambda: not buf.text and not st.waiting and st.question is None),
+        )
+        follow_hint = ConditionalProcessor(
+            AfterInput("a follow-up for this run, or /new", style=f"fg:{DIM} italic"),
+            filter=Condition(lambda: not buf.text and st.waiting and st.question is None),
+        )
+        layout = Layout(
+            HSplit(
+                [
+                    transcript_window,
+                    ConditionalContainer(text_window(lambda: FormattedText(view.spinner())), filter=Condition(lambda: st.running)),
+                    text_window(lambda: FormattedText(view.seam())),
+                    VSplit(
+                        [
+                            Window(FormattedTextControl(lambda: FormattedText(view.marker())), dont_extend_width=True, dont_extend_height=True),
+                            Window(
+                                BufferControl(buffer=buf, lexer=InputLexer(st), input_processors=[placeholder, follow_hint]),
+                                dont_extend_height=True,
+                                wrap_lines=True,
+                            ),
+                        ]
+                    ),
+                    text_window(lambda: FormattedText(view.seam_under())),
+                    ConditionalContainer(text_window(palette_view), filter=palette_open),
+                    ConditionalContainer(text_window(picker_view), filter=picker_open),
+                    ConditionalContainer(text_window(view.status), filter=~palette_open & ~picker_open),
+                ]
+            ),
+            focused_element=buf,
+        )
+        return Application(
+            layout=layout,
+            key_bindings=merge_key_bindings([load_key_bindings(), kb]),
+            style=Style.from_dict({"": INK}),
+            full_screen=True,
+            mouse_support=True,
+            refresh_interval=0.1,
+            output=create_output(stdout=sys.__stdout__),
+        )
+
+    def scroll(self, delta: int) -> None:
+        self.st.scroll = max(0, self.st.scroll + delta)
+
+    def bindings(self, palette_open: Condition, picker_open: Condition) -> KeyBindings:  # noqa: C901  # one small handler per key
+        st, buf = self.st, self.buf
+        kb = KeyBindings()
+
+        @kb.add("enter", filter=palette_open)
+        def _(event: KeyPressEvent) -> None:
+            items = self.palette_items()
+            cmd = items[st.palette_index][0] if items else buf.text.strip()
+            buf.reset()
+            self.run_command(cmd)
+
+        @kb.add("tab", filter=palette_open)
+        def _(event: KeyPressEvent) -> None:
+            items = self.palette_items()
+            if items:
+                buf.text = items[st.palette_index][0] + " "
+                buf.cursor_position = len(buf.text)
+
+        @kb.add("up", filter=palette_open)
+        def _(event: KeyPressEvent) -> None:
+            st.palette_index = max(0, st.palette_index - 1)
+
+        @kb.add("down", filter=palette_open)
+        def _(event: KeyPressEvent) -> None:
+            st.palette_index = min(len(self.palette_items()) - 1, st.palette_index + 1)
+
+        @kb.add("up", filter=picker_open)
+        def _(event: KeyPressEvent) -> None:
+            if st.picker:
+                st.picker.index = max(0, st.picker.index - 1)
+
+        @kb.add("down", filter=picker_open)
+        def _(event: KeyPressEvent) -> None:
+            if st.picker:
+                st.picker.index = min(len(st.picker.items) - 1, st.picker.index + 1)
+
+        @kb.add("enter", filter=picker_open)
+        def _(event: KeyPressEvent) -> None:
+            p, st.picker = st.picker, None
+            if p:
+                p.on_pick(p.items[p.index][0])
+
+        @kb.add("enter", filter=~palette_open & ~picker_open)
+        def _(event: KeyPressEvent) -> None:
+            text = buf.text.strip()
+            if text:
+                buf.append_to_history()
+            buf.reset()
+            self.submit(text)
+
+        @kb.add("pageup")
+        def _(event: KeyPressEvent) -> None:
+            self.scroll(max(1, height() // 2))
+
+        @kb.add("pagedown")
+        def _(event: KeyPressEvent) -> None:
+            self.scroll(-max(1, height() // 2))
+
+        @kb.add("end", filter=Condition(lambda: not buf.text))
+        def _(event: KeyPressEvent) -> None:
+            st.scroll = 0
+
+        @kb.add("s-tab")
+        def _(event: KeyPressEvent) -> None:
+            modes = list(MODES)
+            st.mode = modes[(modes.index(st.mode) + 1) % len(modes)]
+
+        @kb.add("c-e")
+        def _(event: KeyPressEvent) -> None:
+            self.cycle_effort()
+
+        @kb.add("c-o")
+        def _(event: KeyPressEvent) -> None:
+            self.show_output()
+
+        @kb.add("escape", eager=True)
+        def _(event: KeyPressEvent) -> None:
+            if st.picker is not None:
+                p, st.picker = st.picker, None
+                p.on_pick(None)
+            elif isinstance(st.question, Future):
+                fut, st.question = st.question, None
+                if not fut.done():
+                    fut.set_result("")
+            elif buf.text.startswith("/"):
+                buf.reset()
+            else:
+                self.stop()
+
+        @kb.add("c-c")
+        def _(event: KeyPressEvent) -> None:
+            if st.running or st.waiting:
+                self.stop()
+            elif buf.text:
+                buf.reset()
+            else:
+                self.quit()
+
+        @kb.add("c-d")
+        def _(event: KeyPressEvent) -> None:
+            self.quit()
+
+        return kb
+
+    # lifecycle
+
+    async def run(self) -> None:
+        self.loop = asyncio.get_running_loop()
+        self.app = self.build()
+        activate(self.bridge)
+        sys.stdout = sys.stderr = cast(IO[str], self.capture)
+        # The SDK warns once that bypassPermissions shadows can_use_tool; it is not for the user.
+        warnings.filterwarnings("ignore", message=".*can_use_tool.*")
+        try:
+            await self.app.run_async()
+        finally:
+            sys.stdout, sys.stderr = self.real_out, self.real_err
+            activate(None)
+        self.print_transcript()
+
+    def print_transcript(self) -> None:
+        """Leave the session in the terminal's history, like a normal command's output."""
+        console = Console(force_terminal=sys.stdout.isatty(), highlight=False, theme=THEME)
+        for line in self.view.header_text():
+            console.print(line)
+        for item in self.transcript.items:
+            renderable: RenderableType = Text.from_ansi(item.text) if isinstance(item, Raw) else item
+            console.print(renderable)
+
+
+def run_session() -> None:
+    """Entry point for the interactive CLI."""
+    try:
+        asyncio.run(Session().run())
+    except KeyboardInterrupt:
+        pass

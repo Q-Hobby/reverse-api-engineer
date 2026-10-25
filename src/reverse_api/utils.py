@@ -195,8 +195,14 @@ def generate_folder_name(prompt: str, sdk: str | None = None, session_id: str | 
         if sdk == "cursor":
             return _slugify(prompt)
 
+        from contextlib import nullcontext
+
+        from .repl.bridge import active
+
+        # The full-screen session has its own activity line; a rich spinner would only add noise to it.
         console = Console()
-        with Status(" [dim]generating folder name...[/dim]", console=console, spinner="dots", spinner_style="dim"):
+        spinner = nullcontext() if active() else Status(" [dim]generating folder name...[/dim]", console=console, spinner="dots", spinner_style="dim")
+        with spinner:
             if sdk == "opencode":
                 return asyncio.run(_generate_folder_name_opencode_async(prompt, session_id))
             return asyncio.run(_generate_folder_name_async(prompt))

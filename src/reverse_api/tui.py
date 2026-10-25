@@ -204,6 +204,20 @@ class ClaudeUI:
             self.console.print(f" [dim]synced:[/dim]   [white]{escape(local_path)}[/white]")
         self.console.print()
 
+    def usage(self, usage: dict) -> None:
+        """Display token usage and cost for the run."""
+        rows = [
+            ("input", usage.get("input_tokens", 0)),
+            ("cache creation", usage.get("cache_creation_input_tokens", 0)),
+            ("cache read", usage.get("cache_read_input_tokens", 0)),
+            ("output", usage.get("output_tokens", 0)),
+        ]
+        self.console.print("  [dim]Usage:[/dim]")
+        for label, tokens in rows:
+            if tokens:
+                self.console.print(f"  [dim]  {label}: {tokens:,} tokens[/dim]")
+        self.console.print(f"  [dim]  total cost: ${usage.get('estimated_cost_usd', 0):.4f}[/dim]")
+
     def error(self, message: str) -> None:
         """Display error message."""
         self.console.print()

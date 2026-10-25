@@ -1058,6 +1058,13 @@ def repl_loop() -> None:
     """Main interactive loop for the CLI."""
     from concurrent.futures import ThreadPoolExecutor
 
+    # The full-screen session needs a real terminal; RAE_UI=classic keeps the line-by-line one.
+    if os.environ.get("RAE_UI", "").lower() != "classic" and sys.stdin.isatty() and sys.stdout.isatty():
+        from .repl.app import run_session
+
+        run_session()
+        return
+
     # Start update check in background to avoid blocking startup
     update_executor = ThreadPoolExecutor(max_workers=1)
     update_future = update_executor.submit(check_for_updates)

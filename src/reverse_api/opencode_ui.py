@@ -185,6 +185,9 @@ class OpenCodeUI:
         elif token_parts:
             self.console.print(f"  [dim]step: {token_summary}[/dim]")
 
+    def usage(self, usage_metadata: dict[str, Any]) -> None:
+        self.session_summary(usage_metadata)
+
     def session_summary(self, usage_metadata: dict[str, Any]) -> None:
         """Display session usage summary."""
         input_tokens = usage_metadata.get("input_tokens", 0)
