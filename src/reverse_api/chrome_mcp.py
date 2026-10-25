@@ -41,7 +41,9 @@ def chrome_user_data_dir() -> Path | None:
     elif sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
     else:
-        return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "google-chrome"
+        # Chrome on Linux prefers CHROME_CONFIG_HOME over XDG_CONFIG_HOME.
+        config_home = os.environ.get("CHROME_CONFIG_HOME") or os.environ.get("XDG_CONFIG_HOME")
+        return Path(config_home or Path.home() / ".config") / "google-chrome"
 
 
 def check_auto_connect(user_data_dir: Path | None = None, timeout: float = 1.0) -> AutoConnectStatus:
@@ -56,6 +58,8 @@ def check_auto_connect(user_data_dir: Path | None = None, timeout: float = 1.0) 
         return AutoConnectStatus(False, "Chrome remote debugging is not enabled")
     except (OSError, ValueError, IndexError) as e:
         return AutoConnectStatus(False, f"could not read {port_file}: {e}")
+    if not 0 < port < 65536:
+        return AutoConnectStatus(False, f"could not read {port_file}: invalid port {port}")
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=timeout):
             pass

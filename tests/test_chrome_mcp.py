@@ -123,8 +123,18 @@ class TestChromeUserDataDir:
         from reverse_api import chrome_mcp
 
         monkeypatch.setattr(chrome_mcp.sys, "platform", "linux")
+        monkeypatch.delenv("CHROME_CONFIG_HOME", raising=False)
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         assert chrome_mcp.chrome_user_data_dir() == tmp_path / "google-chrome"
+        monkeypatch.setenv("CHROME_CONFIG_HOME", str(tmp_path / "chrome-home"))
+        assert chrome_mcp.chrome_user_data_dir() == tmp_path / "chrome-home" / "google-chrome"
+
+
+def test_out_of_range_port_is_rejected(tmp_path):
+    (tmp_path / "DevToolsActivePort").write_text("999999999999999999999999\n")
+    status = check_auto_connect(tmp_path)
+    assert not status.ok
+    assert "invalid port" in status.reason
 
 
 def test_unreadable_port_file_is_not_reported_as_disabled(tmp_path):
