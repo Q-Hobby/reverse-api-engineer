@@ -84,7 +84,8 @@ class BaseEngineer(ABC):
     on_session: Callable[[str], None] | None = None
 
     def _record_session(self, sid: Any) -> None:
-        if isinstance(sid, str) and sid and sid != self.sdk_session_id:
+        # A reopened session is already on the run, with its cost so far; recording it again would reset that.
+        if isinstance(sid, str) and sid and sid not in (self.sdk_session_id, self.resume_session):
             self.sdk_session_id = sid
             if self.on_session is not None:
                 self.on_session(sid)

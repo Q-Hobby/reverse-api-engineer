@@ -807,6 +807,7 @@ def prompt_interactive_options(  # noqa: C901 — long questionary flow; split w
         "/settings",
         "/history",
         "/messages",
+        "/resume",
         "/help",
         "/exit",
         "/quit",
@@ -1130,10 +1131,12 @@ def repl_loop() -> None:
                         handle_messages(parts[1].strip(), mode_color)
                     else:
                         console.print(" [red]usage:[/red] /messages <run_id>")
+                elif cmd == "/resume" or cmd.startswith("/resume "):
+                    handle_resume(cmd.removeprefix("/resume").strip(), mode_color)
                 else:
                     # Unknown command - show error and available commands
                     console.print(f" [red]Unknown command:[/red] {cmd}")
-                    console.print(" [dim]Available commands: /settings, /history, /messages, /help, /commands, /exit[/dim]")
+                    console.print(" [dim]Available commands: /settings, /history, /messages, /resume, /help, /commands, /exit[/dim]")
                 continue
 
             mode = options.get("mode", "agent")
@@ -1577,6 +1580,28 @@ def handle_history(mode_color: str = THEME_PRIMARY) -> None:
         console.print(" [dim]> not found[/dim]")
 
 
+def handle_resume(run_id: str, mode_color: str = THEME_PRIMARY) -> None:
+    """Continue a past run's conversation: the one named, or one picked from the runs that can be resumed."""
+    if not run_id:
+        runs = [r for r in session_manager.history if resumable(r)][:15]
+        if not runs:
+            console.print(" [dim]> no run can be resumed yet · runs from now on can[/dim]")
+            return
+        choices = [Choice(title=f"{r['run_id']:12}  {r['prompt'][:40]:40}", value=r["run_id"]) for r in runs]
+        choices.append(Choice(title="back", value="back"))
+        picked = questionary.select(
+            "",
+            choices=choices,
+            pointer=">",
+            qmark="",
+            style=questionary.Style([("pointer", f"fg:{mode_color} bold"), ("highlighted", f"fg:{mode_color} bold"), ("selected", "fg:white")]),
+        ).ask()
+        if not picked or picked == "back":
+            return
+        run_id = picked
+    resume_run(run_id)
+
+
 def handle_help(mode_color: str = THEME_PRIMARY) -> None:
     """Show enhanced help with command details and examples."""
     from rich.table import Table
@@ -1603,6 +1628,12 @@ def handle_help(mode_color: str = THEME_PRIMARY) -> None:
     commands_table.add_row(
         "/messages <run_id>",
         "View detailed message logs from a specific run\n[dim]Usage: /messages abc123[/dim]",
+    )
+    commands_table.add_row("", "")
+
+    commands_table.add_row(
+        "/resume [run_id]",
+        "Continue a past run's conversation where it stopped\n[dim]Usage: /resume or /resume abc123[/dim]",
     )
     commands_table.add_row("", "")
 
@@ -2261,7 +2292,7 @@ def run_auto_capture(
 
         # CopilotAutoEngineer wraps the CopilotEngineer that owns the session.
         core = engineer._engineer if isinstance(engineer, CopilotAutoEngineer) else engineer
-        core.on_session = _session_recorder(run_id, "agent", sdk)
+        core.on_session = _session_recorder(run_id, "agent", sdk, model, output_dir)
         if resume:
             core.resume_session, core.cost_before = _resume_point(resume)
             # A new browser stretch records its own HAR instead of replacing the run's capture.
@@ -2309,6 +2340,7 @@ def run_auto_capture(
                 usage=_run_totals(resume.get("usage") or {}, usage) if resume else usage,
                 paths={"script_path": result.get("script_path")},
             )
+            _keep_session_cost(run_id, core.cost_before, usage)
 
         return {
             "run_id": run_id,
@@ -2549,7 +2581,14 @@ def run_engineer(
     enable_sync = config_manager.get("real_time_sync", True)
     output_language = config_manager.get("output_language", "python")
     resume_session, cost_before = _resume_point(resume) if resume else (None, 0.0)
-    on_session = _session_recorder(run_id, "engineer", sdk)
+    # OpenCode and Copilot take their model from settings, except when reopening a session made with another.
+    resume_model = (resume or {}).get("sdk_session", {}).get("model")
+    session_model = {
+        "opencode": resume_model or config_manager.get("opencode_model", DEFAULT_OPENCODE_MODEL),
+        "copilot": resume_model or config_manager.get("copilot_model", "gpt-5"),
+        "cursor": model or config_manager.get("cursor_model", "composer-2.5"),
+    }.get(sdk) or model or config_manager.get("claude_code_model", "claude-sonnet-4-6")
+    on_session = _session_recorder(run_id, "engineer", sdk, session_model, output_dir, output_mode)
 
     if sdk == "opencode":
         result = run_reverse_engineering(
@@ -2560,7 +2599,7 @@ def run_engineer(
             output_dir=output_dir,
             sdk=sdk,
             opencode_provider=config_manager.get("opencode_provider", DEFAULT_OPENCODE_PROVIDER),
-            opencode_model=config_manager.get("opencode_model", DEFAULT_OPENCODE_MODEL),
+            opencode_model=session_model,
             enable_sync=enable_sync,
             additional_instructions=additional_instructions,
             is_fresh=is_fresh,
@@ -2580,7 +2619,7 @@ def run_engineer(
             model=model,
             output_dir=output_dir,
             sdk=sdk,
-            copilot_model=config_manager.get("copilot_model", "gpt-5"),
+            copilot_model=session_model,
             enable_sync=enable_sync,
             additional_instructions=additional_instructions,
             is_fresh=is_fresh,
@@ -2687,6 +2726,7 @@ def run_engineer(
             usage=_run_totals(resume.get("usage") or {}, usage) if resume else usage,
             paths={"script_path": result.get("script_path")},
         )
+        _keep_session_cost(run_id, cost_before, usage)
     return result
 
 
@@ -2702,21 +2742,41 @@ def _session_sdk(resume: dict[str, Any] | None) -> str | None:
 
 
 def _resume_point(resume: dict[str, Any]) -> tuple[str, float]:
-    """The session to reopen and what the run had spent before it."""
-    return str(resume["sdk_session"]["id"]), float((resume.get("usage") or {}).get("estimated_cost_usd") or 0)
+    """The session to reopen and what that session (not the whole run) had cost so far."""
+    session = resume["sdk_session"]
+    return str(session["id"]), float(session.get("cost") or 0)
 
 
-def _session_recorder(run_id: str, mode: str, sdk: str) -> Callable[[str], None]:
-    """Saves an engine's SDK session on its run as soon as the SDK names it, so even a cut-short run can be resumed."""
-    return lambda sid: session_manager.update_run(run_id=run_id, sdk_session={"id": sid, "mode": mode, "sdk": sdk})
+def _session_recorder(
+    run_id: str, mode: str, sdk: str, model: str | None, output_dir: str | None, output_mode: str = "client"
+) -> Callable[[str], None]:
+    """Saves an engine's SDK session on its run as soon as the SDK names it, so even a cut-short run can be resumed.
+
+    The session keeps what reopening it needs: its SDK and model, and the output folder, which fixes the
+    workspace the SDK filed the session under.
+    """
+    session = {"mode": mode, "sdk": sdk, "model": model, "output_dir": str(get_base_output_dir(output_dir)), "output_mode": output_mode}
+    return lambda sid: session_manager.update_run(run_id=run_id, sdk_session={**session, "id": sid, "cost": 0.0})
+
+
+def _keep_session_cost(run_id: str, cost_before: float, usage: dict[str, Any]) -> None:
+    """Stores the session's own running cost: what a later resume takes off the SDK's whole-session total."""
+    session = (session_manager.get_run(run_id) or {}).get("sdk_session")
+    if session:
+        cost = cost_before + float(usage.get("estimated_cost_usd") or 0)
+        session_manager.update_run(run_id=run_id, sdk_session={**session, "cost": cost})
+
+
+def _counter(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _run_totals(before: dict[str, Any], now: dict[str, Any]) -> dict[str, Any]:
-    """A resumed run's usage: this stretch's tokens and cost added to what the run spent before."""
+    """A resumed run's usage: every counter of this stretch (tokens, costs, whatever the SDK reports) added to the run's."""
     totals = {**before, **now}
-    for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "estimated_cost_usd"):
-        if isinstance(before.get(key), (int, float)) and isinstance(now.get(key), (int, float)):
-            totals[key] = before[key] + now[key]
+    for key, value in now.items():
+        if _counter(value) and _counter(before.get(key)):
+            totals[key] = before[key] + value
     return totals
 
 
@@ -2726,11 +2786,13 @@ def resume_run(run_id: str) -> dict[str, Any] | None:
     if run is None or not resumable(run):
         console.print(f" [dim]run {escape(run_id)} has no saved session to resume[/dim]")
         return None
-    model = run.get("model") or None
-    if run["sdk_session"].get("mode") == "agent":
+    session = run["sdk_session"]
+    model = session.get("model") or run.get("model") or None
+    output_dir = session.get("output_dir")
+    if session.get("mode") == "agent":
         provider = str(run["mode"]) if run.get("mode") in ("chrome-mcp", "agent-browser") else "auto"
-        return run_auto_capture(prompt=run["prompt"], url=run.get("url"), model=model, agent_provider=provider, resume=run)
-    return run_engineer(run_id, model=model, resume=run)
+        return run_auto_capture(prompt=run["prompt"], url=run.get("url"), model=model, output_dir=output_dir, agent_provider=provider, resume=run)
+    return run_engineer(run_id, model=model, output_dir=output_dir, output_mode=session.get("output_mode") or "client", resume=run)
 
 
 def _get_run_details(run: dict) -> dict:

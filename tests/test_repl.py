@@ -703,8 +703,20 @@ class TestResume:
     def test_resume_run_picks_the_engine_from_the_saved_session(self, monkeypatch):
         from reverse_api import cli
 
-        agent = {"run_id": "a1", "prompt": "jobs", "mode": "chrome-mcp", "model": "claude-opus-5-5", "sdk_session": {"id": "s-a", "mode": "agent"}}
-        engineer_run = {"run_id": "e1", "prompt": "cars", "mode": "manual", "model": None, "sdk_session": {"id": "s-e", "mode": "engineer"}}
+        agent = {
+            "run_id": "a1",
+            "prompt": "jobs",
+            "mode": "chrome-mcp",
+            "model": "claude-sonnet-4-6",
+            "sdk_session": {"id": "s-a", "mode": "agent", "model": "claude-opus-5-5", "output_dir": "/custom"},
+        }
+        engineer_run = {
+            "run_id": "e1",
+            "prompt": "cars",
+            "mode": "manual",
+            "model": None,
+            "sdk_session": {"id": "s-e", "mode": "engineer", "output_dir": "/runs", "output_mode": "docs"},
+        }
         runs = {"a1": agent, "e1": engineer_run, "old": {"run_id": "old", "prompt": "x", "mode": "auto"}}
         history = MagicMock()
         history.get_run.side_effect = runs.get
@@ -716,8 +728,10 @@ class TestResume:
             cli.resume_run("a1")
             cli.resume_run("e1")
             assert cli.resume_run("old") is None
-        auto.assert_called_once_with(prompt="jobs", url=None, model="claude-opus-5-5", agent_provider="chrome-mcp", resume=agent)
-        engineer.assert_called_once_with("e1", model=None, resume=engineer_run)
+        auto.assert_called_once_with(
+            prompt="jobs", url=None, model="claude-opus-5-5", output_dir="/custom", agent_provider="chrome-mcp", resume=agent
+        )
+        engineer.assert_called_once_with("e1", model=None, output_dir="/runs", output_mode="docs", resume=engineer_run)
 
     def test_run_totals_add_up_across_a_resume(self):
         from reverse_api.cli import _run_totals

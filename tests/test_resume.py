@@ -73,7 +73,7 @@ class TestCopilot:
         await eng._open_copilot_session(client, {"model": "gpt-5"})
         client.resume_session.assert_awaited_once_with("cp-1", {"model": "gpt-5"})
         client.create_session.assert_not_called()
-        assert seen == ["cp-1"]
+        assert seen == [], "the reopened session is already on the run, with its cost so far"
 
     @pytest.mark.asyncio
     async def test_a_new_run_creates_one_and_records_it(self, har_path, tmp_path):
@@ -141,9 +141,50 @@ class TestCli:
         monkeypatch.setattr(cli, "config_manager", config)
         return sm
 
-    def test_sessions_are_recorded_with_their_sdk(self, history):
-        cli._session_recorder("r1", "agent", "cursor")("agent-1")
-        history.update_run.assert_called_once_with(run_id="r1", sdk_session={"id": "agent-1", "mode": "agent", "sdk": "cursor"})
+    def test_sessions_are_recorded_with_what_reopening_them_needs(self, history):
+        cli._session_recorder("r1", "agent", "cursor", "composer-2.5", "/custom")("agent-1")
+        history.update_run.assert_called_once_with(
+            run_id="r1",
+            sdk_session={
+                "mode": "agent",
+                "sdk": "cursor",
+                "model": "composer-2.5",
+                "output_dir": "/custom",
+                "output_mode": "client",
+                "id": "agent-1",
+                "cost": 0.0,
+            },
+        )
+
+    def test_the_cost_baseline_is_the_session_own_not_the_run_total(self, history):
+        resume = {"usage": {"estimated_cost_usd": 5.0}, "sdk_session": {"id": "s-new", "cost": 0.5}}
+        assert cli._resume_point(resume) == ("s-new", 0.5)
+        history.get_run.return_value = {"sdk_session": {"id": "s-new", "cost": 0.5}}
+        cli._keep_session_cost("r1", 0.5, {"estimated_cost_usd": 0.25})
+        history.update_run.assert_called_once_with(run_id="r1", sdk_session={"id": "s-new", "cost": 0.75})
+
+    def test_totals_add_every_counter_of_any_sdk(self):
+        before = {"cost": 1.0, "reasoning_tokens": 10, "cache_write_tokens": 3, "input_tokens": 100, "model": "x", "is_estimate": True}
+        now = {"cost": 0.25, "reasoning_tokens": 5, "cache_write_tokens": 2, "input_tokens": 50, "model": "x", "is_estimate": True}
+        totals = cli._run_totals(before, now)
+        assert totals == {"cost": 1.25, "reasoning_tokens": 15, "cache_write_tokens": 5, "input_tokens": 150, "model": "x", "is_estimate": True}
+
+    def test_a_reopened_session_is_not_recorded_again(self, tmp_path, har_path):
+        eng = _cursor(har_path, tmp_path)
+        seen: list[str] = []
+        eng.on_session, eng.resume_session = seen.append, "agent-1"
+        eng._record_session("agent-1")
+        eng._record_session("agent-2")
+        assert seen == ["agent-2"]
+
+    def test_classic_resume_takes_a_run_id_or_offers_the_resumable_runs(self, history):
+        history.history = [{"run_id": "a1", "prompt": "jobs", "sdk_session": {"id": "s"}}, {"run_id": "old", "prompt": "x"}]
+        with patch.object(cli, "resume_run") as resume, patch.object(cli.questionary, "select") as select:
+            cli.handle_resume("a1")
+            select.return_value.ask.return_value = "a1"
+            cli.handle_resume("")
+        assert [c.value for c in select.call_args.kwargs["choices"]] == ["a1", "back"]
+        assert resume.call_args_list == [(("a1",),), (("a1",),)]
 
     def test_a_resume_uses_the_run_sdk_even_when_settings_changed(self):
         assert cli._session_sdk({"sdk_session": {"id": "s", "sdk": "copilot"}}) == "copilot"
@@ -163,8 +204,9 @@ class TestCli:
             cli.run_engineer("r1", resume=run)
         kwargs = rre.call_args.kwargs
         assert kwargs["sdk"] == "cursor" and kwargs["resume_session"] == "agent-1"
-        kwargs["on_session"]("agent-1")
-        history.update_run.assert_called_with(run_id="r1", sdk_session={"id": "agent-1", "mode": "engineer", "sdk": "cursor"})
+        kwargs["on_session"]("agent-2")
+        session = history.update_run.call_args.kwargs["sdk_session"]
+        assert (session["id"], session["sdk"], session["model"], session["mode"]) == ("agent-2", "cursor", "composer-2.5", "engineer")
 
     def test_run_reverse_engineering_hands_the_session_to_any_engine(self, har_path):
         from reverse_api.engineer import run_reverse_engineering
