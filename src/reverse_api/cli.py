@@ -1714,7 +1714,7 @@ Exit codes:
 @click.option(
     "--model",
     "-m",
-    type=click.Choice(["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]),
+    type=click.Choice([c["value"] for c in get_model_choices()]),
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
@@ -1863,7 +1863,7 @@ Examples:
 @click.option(
     "--model",
     "-m",
-    type=click.Choice(["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]),
+    type=click.Choice([c["value"] for c in get_model_choices()]),
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory for run metadata and messages.")
@@ -2346,7 +2346,7 @@ Exit codes:
 @click.option(
     "--model",
     "-m",
-    type=click.Choice(["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]),
+    type=click.Choice([c["value"] for c in get_model_choices()]),
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")

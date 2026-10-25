@@ -144,6 +144,7 @@ class TestDefaultConfig:
             "agent_browser_npx_package",
             "claude_code_model",
             "claude_setting_sources",
+            "claude_effort",
             "collector_model",
             "copilot_model",
             "cursor_model",

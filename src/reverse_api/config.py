@@ -7,7 +7,7 @@ from typing import Any
 DEFAULT_OPENCODE_PROVIDER = "opencode"
 DEFAULT_OPENCODE_MODEL = "big-pickle"
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "agent_provider": "auto",  # "auto" | "chrome-mcp" | "agent-browser"
     "agent_browser_notes": "",  # extra instructions merged into agent-browser prompt / RAE_AGENT_BROWSER_NOTES env
     "agent_browser_npx_package": "agent-browser@0",
@@ -15,6 +15,9 @@ DEFAULT_CONFIG = {
     # Claude Code setting layers ("user", "project", "local") loaded into Claude SDK sessions.
     # [] isolates the agent from the user's own CLAUDE.md, hooks, plugins and MCP servers.
     "claude_setting_sources": [],
+    # Effort for Claude agent, engineer and collector sessions: "low" | "medium" | "high" | "xhigh" | "max".
+    # None keeps each model's default (Opus 5.5 defaults to "medium", the others to "high").
+    "claude_effort": None,
     "collector_model": "claude-sonnet-4-6",  # Model for collector mode
     "cursor_model": "composer-2.5",  # Model id for Cursor SDK (see Cursor.models.list())
     # When True, local agents load broader Cursor setting layers (plugins/team) so WebFetch/WebSearch

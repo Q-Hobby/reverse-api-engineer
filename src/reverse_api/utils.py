@@ -80,6 +80,25 @@ def build_sdk_env() -> dict[str, str]:
 
 
 _CLAUDE_SETTING_SOURCES = ("user", "project", "local")
+_CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def build_sdk_effort() -> dict[str, Any]:
+    """ClaudeAgentOptions kwargs for the configured ``claude_effort``; empty keeps the model default."""
+    try:
+        from .config import ConfigManager
+
+        effort = ConfigManager(get_config_path()).get("claude_effort")
+    except Exception:
+        effort = None
+    if effort in _CLAUDE_EFFORT_LEVELS:
+        return {"effort": effort}
+    if effort is not None:
+        warnings.warn(
+            f"claude_effort must be one of {list(_CLAUDE_EFFORT_LEVELS)}, got {effort!r}; using the model default",
+            stacklevel=2,
+        )
+    return {}
 
 
 def build_sdk_settings() -> dict[str, Any]:

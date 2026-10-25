@@ -9,11 +9,25 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
         "reasoning": 15.00,
     },
     "claude-opus-4-6": {
-        "input": 15.00,
+        "input": 5.00,
         "output": 25.00,
         "cache_creation": 6.25,
         "cache_read": 0.50,
         "reasoning": 25.00,
+    },
+    "claude-sonnet-5-5": {
+        "input": 2.00,
+        "output": 10.00,
+        "cache_creation": 2.50,
+        "cache_read": 0.20,
+        "reasoning": 10.00,
+    },
+    "claude-opus-5-5": {
+        "input": 4.00,
+        "output": 20.00,
+        "cache_creation": 5.00,
+        "cache_read": 0.20,
+        "reasoning": 20.00,
     },
     "claude-haiku-4-5": {
         "input": 1.00,
@@ -72,21 +86,21 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
         "reasoning": 15.00,
     },
     "claude-opus-4-6-thinking-low": {
-        "input": 15.00,
+        "input": 5.00,
         "output": 25.00,
         "cache_creation": 6.25,
         "cache_read": 0.50,
         "reasoning": 25.00,
     },
     "claude-opus-4-6-thinking-medium": {
-        "input": 15.00,
+        "input": 5.00,
         "output": 25.00,
         "cache_creation": 6.25,
         "cache_read": 0.50,
         "reasoning": 25.00,
     },
     "claude-opus-4-6-thinking-high": {
-        "input": 15.00,
+        "input": 5.00,
         "output": 25.00,
         "cache_creation": 6.25,
         "cache_read": 0.50,
@@ -127,6 +141,14 @@ _LITELLM_MODEL_MAP = {
     "claude-opus-4-6": [
         "claude-opus-4-6",
         "anthropic.claude-opus-4-6",
+    ],
+    "claude-sonnet-5-5": [
+        "claude-sonnet-5-5",
+        "anthropic.claude-sonnet-5-5",
+    ],
+    "claude-opus-5-5": [
+        "claude-opus-5-5",
+        "anthropic.claude-opus-5-5",
     ],
     "claude-haiku-4-5": [
         "claude-haiku-4-5",
