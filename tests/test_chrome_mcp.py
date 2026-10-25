@@ -186,3 +186,11 @@ class TestEngineerHarlessRuns:
         result = self._invoke(tmp_path, "auto", "--json")
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["error"] == f"run abc123 has no HAR at {tmp_path / 'har' / 'recording.har'}"
+
+
+def test_engineer_json_runtime_error_mentioning_required_exits_1(tmp_path):
+    from reverse_api.cli import engineer as engineer_cmd
+
+    with patch("reverse_api.cli.run_engineer", return_value={"error": "field X is required by the API"}):
+        result = CliRunner().invoke(engineer_cmd, ["abc123", "--json"])
+    assert result.exit_code == 1

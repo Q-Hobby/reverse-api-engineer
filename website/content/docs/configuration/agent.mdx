@@ -18,10 +18,10 @@ existing sessions, cookies, and auth from your daily Chrome profile are
 available. The agent opens its own tab and reads traffic through MCP tools;
 no HAR file is saved, so `engineer <run_id>` cannot regenerate these runs.
 
-**Requirements for headed runs:**
+**Requirements:**
 
-- Chrome 146+, open, with auto-connect enabled at `chrome://inspect/#remote-debugging`
-- Node.js 20.19+
+- Node.js 20.19+ (headed and headless)
+- Headed runs only: Chrome 146+, open, with auto-connect enabled at `chrome://inspect/#remote-debugging`
 
 Reverse API Engineer checks that Chrome's remote debugging port is reachable
 before launching (it does not check the Chrome or Node version) (`agent --dry-run`

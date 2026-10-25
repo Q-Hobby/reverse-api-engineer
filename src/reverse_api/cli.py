@@ -2446,6 +2446,7 @@ def engineer(
             if json_stream
             else None
         )
+        result = None
         try:
             result = run_engineer(
                 run_id,
@@ -2469,7 +2470,7 @@ def engineer(
             )
 
         _write_json_stdout(real_stdout, payload, json_stream=json_stream)
-    if payload["error_kind"] == "misuse":
+    if isinstance(result, dict) and result.get("error_kind") == "misuse":
         sys.exit(2)
     sys.exit(0 if payload["status"] == "ok" else 1)
 
