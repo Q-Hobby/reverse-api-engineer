@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **chrome-mcp is the default agent provider** for new configurations. Existing `~/.reverse-api/config.json` files keep the provider they already store; switch with `/settings` or `"agent_provider": "auto"` for Playwright MCP with HAR recording.
+- Headed chrome-mcp runs check Chrome auto-connect (`DevToolsActivePort` plus an open port) before launching and fail with setup steps and `error_kind: config_invalid` instead of starting the agent. `agent --dry-run` reports the same check as an error.
+- Pin `chrome-devtools-mcp` to the 1.12 line and update the chrome-mcp prompt for its `pageId` tool arguments; the agent now opens its own tab.
+
+### Fixed
+- Playwright MCP prompt: `browser_run_code` is now `browser_run_code_unsafe`, and the nonexistent `browser_scroll` tool is no longer listed.
+
 ### Security
 - Raise security minimums to aiohttp >=3.14.4, certifi >=2026.10.19, multidict >=6.9.1, OpenTelemetry API >=1.45.1, PyJWT >=2.15.0 and urllib3 >=2.8.0, and lock the patched versions. certifi drops the emSign root CAs whose intermediate keys were compromised.
 - Upgrade the Cursor bridge to `@cursor/sdk` 1.0.40 with Zod 4.6.7, fixing a Zod memory-exhaustion issue and removing the vulnerable undici dependency.

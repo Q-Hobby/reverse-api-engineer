@@ -14,11 +14,10 @@ Use this workflow as a guide — adapt as needed:
 Use browser MCP tools to accomplish the mission goal. Some available tools:
 - `browser_navigate` - Navigate to a URL
 - `browser_click` - Click an element
-- `browser_scroll` - Scroll the page
 - `browser_close` - Close the browser
-- `browser_evaluate` - Evaluate JavaScript code
+- `browser_evaluate` - Evaluate JavaScript code (also how to scroll)
 - `browser_press_key` - Press a key
-- `browser_run_code` - Run Playwright code
+- `browser_run_code_unsafe` - Run Playwright code
 - `browser_type` - Type text into input
 - `browser_wait_for` - Wait for text/time
 - `browser_snapshot` - Get accessibility tree (good alternative to screenshots)

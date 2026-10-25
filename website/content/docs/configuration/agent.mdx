@@ -7,28 +7,34 @@ Agent mode runs an AI loop. **`auto`** and **`chrome-mcp`** attach browser autom
 
 ## Agent providers
 
-### `auto` (default)
-
-Playwright MCP browser automation with real-time reverse engineering. The
-configured SDK uses Playwright via MCP to control Chromium, capturing the HAR
-as it goes. Add `--headless` when running without a display.
-
-Works with the Claude SDK (default) or the OpenCode SDK. Pick whichever
-you've already configured. Copilot and Cursor SDK backends are also supported
-when their optional dependencies and credentials are installed.
-
-### `chrome-mcp`
+### `chrome-mcp` (default)
 
 Drives your **real Chrome browser** via
-[Chrome DevTools MCP](https://www.npmjs.com/package/chrome-devtools-mcp). Pick
-this when you need existing sessions, cookies, or auth from your daily Chrome
-profile.
+[Chrome DevTools MCP](https://www.npmjs.com/package/chrome-devtools-mcp), so
+existing sessions, cookies, and auth from your daily Chrome profile are
+available. The agent opens its own tab and reads traffic through MCP tools;
+no HAR file is saved.
 
 **Requirements:**
 
-- Chrome 146+
+- Chrome 146+, open, with auto-connect enabled at `chrome://inspect/#remote-debugging`
 - Node.js 20.19+
-- Auto-connect enabled at `chrome://inspect/#remote-debugging`
+
+Reverse API Engineer checks auto-connect before launching (`agent --dry-run`
+reports it as `chrome-mcp:auto-connect`) and stops with setup steps if Chrome
+is not reachable. With `--headless`, Chrome DevTools MCP starts its own
+headless Chrome instead, without your sessions.
+
+### `auto`
+
+Playwright MCP browser automation with real-time reverse engineering. The
+configured SDK uses Playwright via MCP to control Chromium, capturing the HAR
+as it goes, so `engineer <run_id>` can regenerate a client from it later.
+Needs no Chrome setup. Add `--headless` when running without a display.
+
+Works with the Claude SDK (default) or the OpenCode SDK. Copilot and Cursor
+SDK backends are also supported when their optional dependencies and
+credentials are installed.
 
 ### `agent-browser`
 
@@ -62,7 +68,7 @@ Or edit `~/.reverse-api/config.json`:
 
 ```json
 {
-  "agent_provider": "chrome-mcp"
+  "agent_provider": "auto"
 }
 ```
 

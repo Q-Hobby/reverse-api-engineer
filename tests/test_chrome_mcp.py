@@ -1,0 +1,97 @@
+"""Tests for the chrome-mcp default provider and its auto-connect preflight."""
+
+import json
+import socket
+from unittest.mock import patch
+
+from click.testing import CliRunner
+
+from reverse_api.chrome_mcp import AutoConnectStatus, check_auto_connect
+from reverse_api.config import DEFAULT_CONFIG
+
+
+def _config(tmp_path, provider="chrome-mcp"):
+    values = {
+        "agent_provider": provider,
+        "sdk": "claude",
+        "claude_code_model": "claude-sonnet-4-6",
+        "output_dir": str(tmp_path),
+    }
+    return lambda key, default=None: values.get(key, default)
+
+
+class TestCheckAutoConnect:
+    def test_missing_port_file(self, tmp_path):
+        status = check_auto_connect(tmp_path)
+        assert not status.ok
+        assert "chrome://inspect/#remote-debugging" in status.message
+
+    def test_unreadable_port_file(self, tmp_path):
+        (tmp_path / "DevToolsActivePort").write_text("not-a-port\n")
+        assert not check_auto_connect(tmp_path).ok
+
+    def test_closed_port(self, tmp_path):
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        (tmp_path / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/x\n")
+        status = check_auto_connect(tmp_path, timeout=0.2)
+        assert not status.ok
+        assert str(port) in status.message
+
+    def test_open_port(self, tmp_path):
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen(1)
+            port = server.getsockname()[1]
+            (tmp_path / "DevToolsActivePort").write_text(f"{port}\n/devtools/browser/x\n")
+            assert check_auto_connect(tmp_path).ok
+
+
+def test_chrome_mcp_is_the_default_provider():
+    assert DEFAULT_CONFIG["agent_provider"] == "chrome-mcp"
+
+
+class TestDryRunAutoConnect:
+    def _invoke(self, tmp_path, status, *args):
+        from reverse_api.cli import agent as agent_cmd
+
+        with patch("reverse_api.cli.config_manager") as cm, \
+             patch("reverse_api.chrome_mcp.check_auto_connect", return_value=status), \
+             patch.dict("os.environ", {"ANTHROPIC_API_KEY": "fake"}, clear=False):
+            cm.get.side_effect = _config(tmp_path)
+            result = CliRunner().invoke(agent_cmd, ["--dry-run", "-p", "fetch jobs", *args])
+        return result, json.loads(result.stdout.strip())
+
+    def test_headed_without_auto_connect_is_an_error(self, tmp_path):
+        result, payload = self._invoke(tmp_path, AutoConnectStatus(False, "not enabled"))
+        assert result.exit_code == 1
+        check = next(c for c in payload["checks"] if c["name"] == "chrome-mcp:auto-connect")
+        assert check == {"name": "chrome-mcp:auto-connect", "status": "error", "message": "not enabled"}
+        assert payload["error_kind"] == "config_invalid"
+
+    def test_headed_with_auto_connect_passes(self, tmp_path):
+        result, payload = self._invoke(tmp_path, AutoConnectStatus(True, "reachable"))
+        check = next(c for c in payload["checks"] if c["name"] == "chrome-mcp:auto-connect")
+        assert check["status"] == "ok"
+
+    def test_headless_skips_the_check(self, tmp_path):
+        _, payload = self._invoke(tmp_path, AutoConnectStatus(False, "not enabled"), "--headless")
+        assert "chrome-mcp:auto-connect" not in {c["name"] for c in payload["checks"]}
+
+
+def test_agent_json_fails_fast_without_auto_connect(tmp_path):
+    from reverse_api.cli import agent as agent_cmd
+
+    with patch("reverse_api.cli.config_manager") as cm, \
+         patch("reverse_api.chrome_mcp.check_auto_connect", return_value=AutoConnectStatus(False, "not enabled")), \
+         patch("reverse_api.cli.session_manager") as sessions:
+        cm.get.side_effect = _config(tmp_path)
+        result = CliRunner().invoke(agent_cmd, ["--json", "-p", "fetch jobs", "-u", "https://example.com"])
+
+    payload = json.loads(result.stdout.strip())
+    assert result.exit_code == 1
+    assert payload["status"] == "error"
+    assert payload["error"] == "not enabled"
+    assert payload["error_kind"] == "config_invalid"
+    sessions.add_run.assert_not_called()

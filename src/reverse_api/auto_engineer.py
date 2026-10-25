@@ -30,6 +30,7 @@ from .agent_browser import (
     ensure_agent_browser_runtime,
     print_agent_browser_setup_notices,
 )
+from .chrome_mcp import CHROME_DEVTOOLS_MCP_PACKAGE
 from .engineer import ClaudeEngineer
 from .opencode_engineer import OpenCodeEngineer, debug_log, format_error
 from .utils import build_sdk_env, get_har_dir
@@ -182,7 +183,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 "registered browser MCP server (this helper only builds configs for MCP providers)"
             )
         if self.agent_provider == "chrome-mcp":
-            args = ["chrome-devtools-mcp@latest", "--no-usage-statistics"]
+            args = [CHROME_DEVTOOLS_MCP_PACKAGE, "--no-usage-statistics"]
             if self.headless:
                 args.append("--headless")
             else:
@@ -324,7 +325,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 )
             elif "MCP server" in error_msg or "npx" in error_msg:
                 if self.agent_provider == "chrome-mcp":
-                    self.ui.console.print("\n[dim]Make sure chrome-devtools-mcp is available: npx chrome-devtools-mcp@latest[/dim]")
+                    self.ui.console.print(f"\n[dim]Make sure chrome-devtools-mcp is available: npx {CHROME_DEVTOOLS_MCP_PACKAGE}[/dim]")
                     self.ui.console.print("[dim]Chrome 146+ required with auto-connect enabled at chrome://inspect/#remote-debugging[/dim]")
                 elif self.agent_provider == "agent-browser":
                     self.ui.console.print(
@@ -378,7 +379,7 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
             return None
         if self.agent_provider == "chrome-mcp":
             self.mcp_name = f"chrome-devtools-{self._session_id}"
-            cmd = ["npx", "-y", "chrome-devtools-mcp@latest", "--no-usage-statistics"]
+            cmd = ["npx", "-y", CHROME_DEVTOOLS_MCP_PACKAGE, "--no-usage-statistics"]
             if self.headless:
                 cmd.append("--headless")
             else:
@@ -686,7 +687,7 @@ class CopilotAutoEngineer:
             await client.start()
 
             if self.agent_provider == "chrome-mcp":
-                chrome_args = ["-y", "chrome-devtools-mcp@latest", "--no-usage-statistics"]
+                chrome_args = ["-y", CHROME_DEVTOOLS_MCP_PACKAGE, "--no-usage-statistics"]
                 if self.headless:
                     chrome_args.append("--headless")
                 else:

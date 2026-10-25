@@ -417,7 +417,7 @@ def _build_dry_run_payload(
     from .agent_browser import check_agent_browser_runtime
 
     checks: list[dict] = []
-    agent_provider = config_manager.get("agent_provider", "auto")
+    agent_provider = config_manager.get("agent_provider", "chrome-mcp")
     global_agent_browser = shutil.which("agent-browser")
 
     # 1. Prompt
@@ -519,15 +519,15 @@ def _build_dry_run_payload(
     else:
         checks.append({"name": "npx", "status": "ok", "message": npx})
 
-    # 6. Headed chrome-mcp requires the user has a real Chrome with auto-connect
+    # 6. Headed chrome-mcp attaches to the user's running Chrome through auto-connect
     if agent_provider == "chrome-mcp" and not headless:
+        from .chrome_mcp import check_auto_connect
+
+        auto_connect = check_auto_connect()
         checks.append({
             "name": "chrome-mcp:auto-connect",
-            "status": "warn",
-            "message": (
-                "chrome-mcp without --headless requires Chrome 146+ with auto-connect enabled "
-                "at chrome://inspect/#remote-debugging — this is not auto-checkable"
-            ),
+            "status": "ok" if auto_connect.ok else "error",
+            "message": auto_connect.message,
         })
 
     # 7. agent-browser CLI: read-only validation (no npm install during dry-run).
@@ -640,6 +640,8 @@ def _build_agent_payload(
         final_error_obj = "agent capture produced no run"
     error_str = _format_error_message(final_error_obj)
     error_kind = _classify_error(final_error_obj, default=error_kind_hint) if final_error_obj else None
+    if error is None and inner_error is not None and result.get("error_kind"):
+        error_kind = result["error_kind"]
     har_path = None
     if run_id:
         candidate = get_har_dir(run_id, output_dir) / "recording.har"
@@ -1317,8 +1319,8 @@ def _handle_settings_action(mode_color: str = THEME_PRIMARY) -> bool:  # noqa: C
 
     elif action == "agent_provider":
         provider_choices = [
-            Choice(title="auto (Playwright MCP)", value="auto"),
-            Choice(title="chrome-mcp (Chrome DevTools MCP)", value="chrome-mcp"),
+            Choice(title="chrome-mcp (your Chrome via Chrome DevTools MCP, default)", value="chrome-mcp"),
+            Choice(title="auto (Playwright MCP, records a HAR)", value="auto"),
             Choice(title="agent-browser (Vercel CLI via shell/Bash)", value="agent-browser"),
             Choice(title="back", value="back"),
         ]
@@ -1992,7 +1994,7 @@ def run_agent_capture(
         url = options["url"]
         model = options["model"]
 
-    agent_provider = config_manager.get("agent_provider", "auto")
+    agent_provider = config_manager.get("agent_provider", "chrome-mcp")
     return run_auto_capture(
         prompt=prompt,
         url=url,
@@ -2063,7 +2065,7 @@ def run_auto_capture(
     url: str | None = None,
     model: str | None = None,
     output_dir: str | None = None,
-    agent_provider: str = "auto",
+    agent_provider: str = "chrome-mcp",
     interactive: bool = True,
     headless: bool = False,
     json_event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -2085,16 +2087,23 @@ def run_auto_capture(
         model = options["model"]
 
     if agent_provider == "chrome-mcp" and not headless:
+        from .chrome_mcp import check_auto_connect
+
+        auto_connect = check_auto_connect()
         console.print()
         console.print(" [dim]chrome devtools mcp (auto-connect)[/dim]")
+        if not auto_connect.ok:
+            console.print(" [dim]auto-connect setup:[/dim]")
+            console.print(" [dim] 1. chrome 146+ required[/dim]")
+            console.print(" [dim] 2. go to chrome://inspect/#remote-debugging[/dim]")
+            console.print(' [dim] 3. click "Enable auto-connect" and keep chrome open[/dim]')
+            console.print(" [dim] 4. node.js v20.19+[/dim]")
+            console.print(" [dim]or run with --headless, or pick another provider in /settings[/dim]")
+            console.print()
+            console.print(f" [red]error:[/red] {auto_connect.message}")
+            return {"error": auto_connect.message, "error_kind": "config_invalid", "error_reported": True}
         console.print(" [dim]controlling your real chrome browser[/dim]")
         console.print(" [dim]existing sessions, cookies, and auth available[/dim]")
-        console.print()
-        console.print(" [dim]auto-connect setup:[/dim]")
-        console.print(" [dim] 1. chrome 146+ required[/dim]")
-        console.print(" [dim] 2. go to chrome://inspect/#remote-debugging[/dim]")
-        console.print(' [dim] 3. click "Enable auto-connect"[/dim]')
-        console.print(" [dim] 4. node.js v20.19+[/dim]")
         console.print()
         console.print(" [dim]warning: the agent will execute actions on your browser[/dim]")
         console.print(" [dim]avoid browsing sensitive sites during the session[/dim]")

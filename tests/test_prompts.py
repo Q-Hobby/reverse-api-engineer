@@ -233,7 +233,7 @@ class TestAutoTemplates:
         assert "browse example.com" in text
         assert "navigate_page" in text
         assert "There is no HAR file" in text
-        assert "REAL Chrome browser" in text
+        assert "REAL Chrome" in text
 
 
 class TestFolderNamePrompt:

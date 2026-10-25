@@ -76,8 +76,8 @@ Cycle modes with **Shift+Tab**:
 | `collector` | Agent collects structured data (JSON/CSV) using web search + fetch. |
 
 Agent mode providers:
-- **auto** (default): Playwright MCP, single workflow for browsing + reverse engineering.
-- **chrome-mcp**: drives your real Chrome so you keep existing sessions/cookies. Requires Chrome 146+ and Node.js 20.19+.
+- **chrome-mcp** (default): drives your real Chrome so you keep existing sessions/cookies. Requires Chrome 146+ with auto-connect enabled at `chrome://inspect/#remote-debugging`, and Node.js 20.19+; rae checks this before launching. `--headless` starts a separate headless Chrome instead. No HAR file is saved.
+- **auto**: Playwright MCP, records a HAR and needs no Chrome setup.
 - **agent-browser**: [Vercel agent-browser](https://github.com/vercel-labs/agent-browser) **CLI** (not a Reverse API Engineer browser MCP server). At session start RAE uses whatever `agent-browser` is already on `PATH`, otherwise runs **`npm install -g <pin>`** (same pin as config / `RAE_AGENT_BROWSER_PACKAGE`), prints a yellow notice, validates with **`--help`**, and only then falls back to **`npx -y <pin>`** if npm cannot install. Prompts embed the resolved shell prefix alongside **`skills get core --full`**, **`skills list`**, HAR phases, cloud notes from `agent_browser_notes`. Tune with `agent_browser_npx_package` (optional), env `RAE_AGENT_BROWSER_*`. First Chromium fetch: **`agent-browser install`** (add `--with-deps` on trimmed Linux).
 
 
@@ -94,7 +94,7 @@ Settings live in `~/.reverse-api/config.json` and can be edited via `/settings` 
 
 ```json
 {
-  "agent_provider": "auto",
+  "agent_provider": "chrome-mcp",
   "agent_browser_npx_package": "agent-browser@0",
   "agent_browser_notes": "",
   "claude_code_model": "claude-sonnet-4-6",
