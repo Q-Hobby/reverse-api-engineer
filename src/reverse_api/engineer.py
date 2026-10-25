@@ -171,7 +171,9 @@ class ClaudeEngineer(BaseEngineer):
         Returns a result dict on success, or None on error.
         """
         async for message in client.receive_response():
-            if hasattr(message, "usage") and isinstance(message.usage, dict):
+            # Only ResultMessage carries billable per-query totals; AssistantMessage.usage
+            # repeats for every content block of a response and would double count.
+            if isinstance(message, ResultMessage) and isinstance(message.usage, dict):
                 self._accumulate_usage(message.usage)
 
             if isinstance(message, AssistantMessage):
@@ -237,12 +239,17 @@ class ClaudeEngineer(BaseEngineer):
 
                         from .pricing import calculate_cost
 
-                        cost = calculate_cost(
-                            model_id=self.model,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            cache_creation_tokens=cache_creation_tokens,
-                            cache_read_tokens=cache_read_tokens,
+                        # total_cost_usd is the SDK's own figure, cumulative over the session.
+                        cost = (
+                            float(message.total_cost_usd)
+                            if isinstance(message.total_cost_usd, (int, float))
+                            else calculate_cost(
+                                model_id=self.model,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                cache_creation_tokens=cache_creation_tokens,
+                                cache_read_tokens=cache_read_tokens,
+                            )
                         )
                         self.usage_metadata["estimated_cost_usd"] = cost
 

@@ -59,6 +59,7 @@ class Collector:
         self._folder_name: str | None = None
         self._collected_dir: Path | None = None
         self.usage_metadata: dict[str, Any] = {}
+        self._sdk_cost_usd: float | None = None
 
     async def run(self) -> dict[str, Any] | None:
         """Run the collector agent loop.
@@ -122,15 +123,17 @@ class Collector:
                 await client.query(self._user_message)
 
                 async for message in client.receive_response():
-                    # Track usage
-                    if hasattr(message, "usage"):
-                        usage = message.usage
-                        if isinstance(usage, dict):
-                            for key, value in usage.items():
+                    # Only ResultMessage carries billable totals; AssistantMessage.usage
+                    # repeats for every content block of a response and would double count.
+                    if isinstance(message, ResultMessage):
+                        if isinstance(message.usage, dict):
+                            for key, value in message.usage.items():
                                 if isinstance(key, str) and isinstance(value, (int, float)):
                                     current = self.usage_metadata.get(key, 0)
                                     if isinstance(current, (int, float)):
                                         self.usage_metadata[key] = current + value
+                        if isinstance(message.total_cost_usd, (int, float)):
+                            self._sdk_cost_usd = float(message.total_cost_usd)
 
                     if isinstance(message, AssistantMessage):
                         last_tool_name = None
@@ -225,12 +228,16 @@ class Collector:
             cache_creation = self.usage_metadata.get("cache_creation_input_tokens", 0)
             cache_read = self.usage_metadata.get("cache_read_input_tokens", 0)
 
-            cost = calculate_cost(
-                model_id=self.model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_creation_tokens=cache_creation,
-                cache_read_tokens=cache_read,
+            cost = (
+                self._sdk_cost_usd
+                if self._sdk_cost_usd is not None
+                else calculate_cost(
+                    model_id=self.model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_creation_tokens=cache_creation,
+                    cache_read_tokens=cache_read,
+                )
             )
             self.usage_metadata["estimated_cost_usd"] = cost
 

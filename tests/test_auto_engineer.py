@@ -688,14 +688,16 @@ class TestClaudeAutoEngineerAnalyze:
                 assert "script_path" in result
 
     @pytest.mark.asyncio
-    async def test_assistant_message_with_usage(self, tmp_path):
-        """AssistantMessage with usage metadata updates tracking."""
+    async def test_usage_comes_from_result_message_only(self, tmp_path):
+        """AssistantMessage.usage repeats per content block; only the ResultMessage totals count."""
         eng = self._make_engineer(tmp_path)
 
         mock_assistant = AssistantMessage(content=[], model="claude-sonnet-4-6")
         mock_assistant.usage = {"input_tokens": 500, "output_tokens": 200}
 
         mock_result = _sdk_result_message()
+        mock_result.usage = {"input_tokens": 40, "output_tokens": 30}
+        mock_result.total_cost_usd = 0.12
 
         mock_client = AsyncMock()
         mock_client.query = AsyncMock()
@@ -713,7 +715,9 @@ class TestClaudeAutoEngineerAnalyze:
 
                 result = await eng.analyze_and_generate()
                 assert result is not None
-                assert eng.usage_metadata.get("input_tokens") == 500
+                assert eng.usage_metadata.get("input_tokens") == 40
+                assert eng.usage_metadata.get("output_tokens") == 30
+                assert eng.usage_metadata.get("estimated_cost_usd") == 0.12
 
     @pytest.mark.asyncio
     async def test_tool_result_with_result_attr(self, tmp_path):

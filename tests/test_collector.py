@@ -413,6 +413,8 @@ class TestCollectorAgentLoop:
 
                 mock_result = MagicMock(spec=ResultMessage)
                 mock_result.is_error = False
+                mock_result.usage = {"input_tokens": 120, "output_tokens": 60}
+                mock_result.total_cost_usd = 0.05
 
                 mock_client = AsyncMock()
                 mock_client.query = AsyncMock()
@@ -430,8 +432,10 @@ class TestCollectorAgentLoop:
 
                     result = await collector._agent_loop()
                     assert result == {"success": True}
-                    assert collector.usage_metadata["input_tokens"] == 300
-                    assert collector.usage_metadata["output_tokens"] == 125
+                    # AssistantMessage.usage repeats per content block; only the result counts.
+                    assert collector.usage_metadata["input_tokens"] == 120
+                    assert collector.usage_metadata["output_tokens"] == 60
+                    assert collector._sdk_cost_usd == 0.05
 
     @pytest.mark.asyncio
     async def test_agent_loop_no_result_returns_success(self, tmp_path):
