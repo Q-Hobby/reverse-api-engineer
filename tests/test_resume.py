@@ -159,6 +159,8 @@ class TestCli:
     def test_the_cost_baseline_is_the_session_own_not_the_run_total(self, history):
         resume = {"usage": {"estimated_cost_usd": 5.0}, "sdk_session": {"id": "s-new", "cost": 0.5}}
         assert cli._resume_point(resume) == ("s-new", 0.5)
+        older = {"usage": {"estimated_cost_usd": 1.0}, "sdk_session": {"id": "s-old"}}
+        assert cli._resume_point(older) == ("s-old", 1.0), "sessions saved before they kept their own cost"
         history.get_run.return_value = {"sdk_session": {"id": "s-new", "cost": 0.5}}
         cli._keep_session_cost("r1", 0.5, {"estimated_cost_usd": 0.25})
         history.update_run.assert_called_once_with(run_id="r1", sdk_session={"id": "s-new", "cost": 0.75})
@@ -168,6 +170,11 @@ class TestCli:
         now = {"cost": 0.25, "reasoning_tokens": 5, "cache_write_tokens": 2, "input_tokens": 50, "model": "x", "is_estimate": True}
         totals = cli._run_totals(before, now)
         assert totals == {"cost": 1.25, "reasoning_tokens": 15, "cache_write_tokens": 5, "input_tokens": 150, "model": "x", "is_estimate": True}
+
+    def test_a_relative_output_folder_is_saved_absolute(self, history, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        cli._session_recorder("r1", "agent", "claude", "claude-sonnet-5-5", "./outputs")("s-1")
+        assert history.update_run.call_args.kwargs["sdk_session"]["output_dir"] == str((tmp_path / "outputs").resolve())
 
     def test_a_reopened_session_is_not_recorded_again(self, tmp_path, har_path):
         eng = _cursor(har_path, tmp_path)

@@ -2744,7 +2744,9 @@ def _session_sdk(resume: dict[str, Any] | None) -> str | None:
 def _resume_point(resume: dict[str, Any]) -> tuple[str, float]:
     """The session to reopen and what that session (not the whole run) had cost so far."""
     session = resume["sdk_session"]
-    return str(session["id"]), float(session.get("cost") or 0)
+    # Sessions saved before their own cost was kept fall back to the run's total, which was theirs then.
+    cost = session["cost"] if "cost" in session else (resume.get("usage") or {}).get("estimated_cost_usd")
+    return str(session["id"]), float(cost or 0)
 
 
 def _session_recorder(
@@ -2755,7 +2757,7 @@ def _session_recorder(
     The session keeps what reopening it needs: its SDK and model, and the output folder, which fixes the
     workspace the SDK filed the session under.
     """
-    session = {"mode": mode, "sdk": sdk, "model": model, "output_dir": str(get_base_output_dir(output_dir)), "output_mode": output_mode}
+    session = {"mode": mode, "sdk": sdk, "model": model, "output_dir": str(get_base_output_dir(output_dir).resolve()), "output_mode": output_mode}
     return lambda sid: session_manager.update_run(run_id=run_id, sdk_session={**session, "id": sid, "cost": 0.0})
 
 
