@@ -144,6 +144,7 @@ class Bridge:
             text = await asyncio.get_running_loop().run_in_executor(None, self.follow_ups.get)
             st.waiting = False
             if text is None:
+                st.running, st.verb, st.kind = True, "wrapping up", "other"  # until the app's finish() runs
                 self.invalidate()
                 return None
         st.running, st.verb, st.kind = True, "thinking", "other"

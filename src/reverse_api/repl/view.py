@@ -160,8 +160,12 @@ def run_summary(run: dict[str, Any]) -> str:
 
 
 def link(text: str, target: Path | str) -> str:
-    url = target.as_uri() if isinstance(target, Path) else target
-    return f"[link={url}]{escape(text)}[/link]"
+    """Clickable text; a relative path has no file URI, so it stays plain."""
+    if isinstance(target, Path):
+        if not target.is_absolute():
+            return escape(text)
+        target = target.as_uri()
+    return f"[link={target}]{escape(text)}[/link]"
 
 
 @dataclass
@@ -171,6 +175,7 @@ class Picker:
     current: str | None
     on_pick: Callable[[str | None], None]
     index: int = 0
+    question: bool = False  # an agent question, which ends with its run
 
 
 @dataclass

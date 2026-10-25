@@ -529,3 +529,80 @@ def test_card_path_is_a_link(session, tmp_path):
     view.card(Path(client), 3, "python")
     handlers = [frag for line in t.lines() for frag in line if len(frag) == 3]
     assert handlers, "the client name in the card should be clickable"
+
+
+class Loop:
+    """Runs call_soon_threadsafe callbacks at once, standing in for the app's loop."""
+
+    def call_soon_threadsafe(self, fn):
+        fn()
+
+
+class TestRunLifecycle:
+    def test_ending_a_waiting_run_stays_busy_until_it_wraps_up(self, app_session):
+        session, _history = app_session
+        session.loop = Loop()
+        st = session.st
+        st.waiting = True
+        session.run_command("/new")
+        assert session.bridge.follow_ups.get_nowait() is None
+        assert st.running and not st.waiting and st.verb == "wrapping up"
+        with patch.object(session, "start") as start:
+            session.submit("the next capture")
+            assert st.queue == ["the next capture"] and not start.called
+            session.finish({"script_path": "x"})
+        start.assert_called_once_with("the next capture")
+        assert not st.running
+
+    def test_a_cut_stream_settles_when_the_run_ends(self, app_session):
+        session, _history = app_session
+        ui = session.bridge.ui()
+        ui.stream_text("Looking at the network ")
+        session.view.error("connection lost")
+        assert "connection lost" not in plain(session.transcript)
+        session.finish(None)
+        text = plain(session.transcript)
+        assert "Looking at the network" in text and "connection lost" in text
+
+    def test_a_stopped_run_takes_its_question_with_it(self, app_session):
+        session, _history = app_session
+        session.loop = Loop()
+        st = session.st
+        typed = session.ask_user({"question": "Which board?", "options": []})
+        assert st.question is typed
+        typed.cancel()
+        session.ask_user({"question": "Which region?", "options": [("EU", "")]})
+        assert st.picker is not None and st.picker.question
+        session.finish(None)
+        assert st.question is None and st.picker is None
+        with patch.object(session, "start") as start:
+            session.submit("all jobs on example.com")
+        start.assert_called_once_with("all jobs on example.com")
+
+    def test_a_question_stopped_before_it_shows_stays_away(self, app_session):
+        session, _history = app_session
+        shown = []
+        session.loop = type("Later", (), {"call_soon_threadsafe": lambda self, fn: shown.append(fn)})()
+        fut = session.ask_user({"question": "Which board?", "options": []})
+        fut.cancel()
+        shown[0]()
+        assert session.st.question is None
+
+    def test_relative_tool_paths_render_without_a_link(self, session):
+        _st, t, _view, b = session
+        LedgerUI(b).tool_start("Read", {"file_path": "api_client.py"})
+        assert "read" in plain(t) and "api_client.py" in plain(t)
+
+    def test_windows_file_links_become_drive_and_unc_paths(self, monkeypatch):
+        import nturl2path
+
+        from reverse_api.repl import app
+
+        monkeypatch.setattr(app.sys, "platform", "win32")
+        monkeypatch.setattr(app, "url2pathname", nturl2path.url2pathname)
+        assert app.file_path("file:///C:/Users/test/api_client.py") == "C:\\Users\\test\\api_client.py"
+        assert app.file_path("file://server/share/api_client.py") == "\\\\server\\share\\api_client.py"
+        opened: list[str] = []
+        monkeypatch.setattr(app.os, "startfile", opened.append, raising=False)
+        app.open_target("file:///C:/Users/test/api_client.py")
+        assert opened == ["C:\\Users\\test\\api_client.py"]

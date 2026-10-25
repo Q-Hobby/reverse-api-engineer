@@ -20,7 +20,8 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
 from typing import IO, Any, cast
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import click
 from prompt_toolkit.application import Application, run_in_terminal
@@ -79,9 +80,19 @@ PICKER_COMMANDS = {"/model", "/effort", "/mode", "/history", "/messages"}
 URL_IN_PROMPT = re.compile(r"https?://([^/\s]+)|\b((?:[\w-]+\.)+(?:com|io|co|ch|de|fr|uk|org|net|dev|ai|app|so|sh|eu|jobs))\b")
 
 
+def file_path(target: str) -> str:
+    """A file:// link as a local path: url2pathname turns /C:/x into C:\\x on Windows, and a host makes a UNC path."""
+    parsed = urlparse(target)
+    path = url2pathname(parsed.path)
+    if parsed.netloc and parsed.netloc != "localhost":
+        sep = "\\" if sys.platform == "win32" else "/"
+        path = f"{sep}{sep}{parsed.netloc}{path}"
+    return path
+
+
 def open_target(target: str) -> None:
     """Open a clicked link: files with the system's default app, URLs in the browser."""
-    path = unquote(urlparse(target).path) if target.startswith("file://") else target
+    path = file_path(target) if target.startswith("file://") else target
     if sys.platform == "win32":
         os.startfile(path)  # type: ignore[attr-defined]  # noqa: S606
         return
@@ -155,17 +166,20 @@ class Session:
         fut: Future = Future()
 
         def show() -> None:
+            if fut.done():
+                return  # the run was stopped before the question reached the bar
             options = spec.get("options") or []
             if options:
                 items = [(label, label, desc) for label, desc in options] + [("", "something else", "type your own answer")]
 
                 def picked(value: str | None) -> None:
                     if value == "":
-                        self.st.question = fut
+                        if not fut.done():
+                            self.st.question = fut
                     elif not fut.done():
                         fut.set_result(value or "")
 
-                self.st.picker = Picker(str(spec.get("question", "")), items, None, picked)
+                self.st.picker = Picker(str(spec.get("question", "")), items, None, picked, question=True)
             else:
                 self.st.question = fut
             self.invalidate()
@@ -220,7 +234,7 @@ class Session:
             self.quit()
         elif cmd == "/new":
             if st.waiting:
-                self.bridge.follow_ups.put(None)
+                self.end_run()
             elif st.running:
                 view.notice("a run is in progress · esc stops it")
             else:
@@ -245,7 +259,7 @@ class Session:
             self.show_output()
         elif cmd == "/open":
             if st.last_client:
-                open_target(st.last_client.as_uri())
+                open_target(str(st.last_client))
             else:
                 view.notice("no client yet")
         elif cmd == "/clear":
@@ -253,7 +267,7 @@ class Session:
                 view.notice("a run is in progress · esc stops it")
             else:
                 if st.waiting:
-                    self.bridge.follow_ups.put(None)
+                    self.end_run()
                 view.flush_live()
                 self.transcript.clear()
                 st.scroll, st.folded, st.cost, st.tokens, st.step = 0, False, 0.0, 0, 0
@@ -418,11 +432,22 @@ class Session:
 
         threading.Thread(target=target, name="rae-run", daemon=True).start()
 
+    def end_run(self) -> None:
+        """End a run that waits for a follow-up. It stays busy until its worker has wrapped up,
+        so a prompt sent meanwhile is queued for after it instead of racing its cleanup."""
+        st = self.st
+        st.waiting, st.running, st.verb, st.kind = False, True, "wrapping up", "other"
+        self.bridge.follow_ups.put(None)
+
     def finish(self, result: Any) -> None:
         st = self.st
+        # A stream cut short never closes its live message; settle it so nothing stays hidden behind it.
+        self.view.flush_live()
         self.bridge.flush_card()
+        if st.picker is not None and st.picker.question:
+            st.picker = None
+        st.question = None
         if isinstance(result, dict) and result.get("error") and not result.get("error_reported"):
-            self.view.flush_live()
             if result["error"] in ("interrupted", "Agent analysis cancelled."):
                 self.view.interrupted()
             else:
@@ -471,7 +496,7 @@ class Session:
             if not self.bridge.cancel():
                 self.view.notice("this run cannot be stopped from here")
         elif st.waiting:
-            self.bridge.follow_ups.put(None)
+            self.end_run()
 
     def show_output(self) -> None:
         items = list(self.transcript.full)
