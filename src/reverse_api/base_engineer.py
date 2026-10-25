@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,27 @@ class BaseEngineer(ABC):
     # Single source of truth lives in utils.OUTPUT_LANGUAGE_EXTENSIONS so
     # script discovery and the run command dispatch stay in sync with codegen.
     _OUTPUT_LANGUAGE_EXTENSIONS = OUTPUT_LANGUAGE_EXTENSIONS
+
+    # The run's SDK session (a Claude, Copilot or OpenCode session, a Cursor agent), kept so /resume can
+    # reopen it. With resume_session set the run reopens that session and starts from the user's next
+    # message. cost_before is what the run spent earlier, for an SDK whose cost counts the whole session.
+    sdk_session_id: str | None = None
+    resume_session: str | None = None
+    cost_before = 0.0
+    on_session: Callable[[str], None] | None = None
+
+    def _record_session(self, sid: Any) -> None:
+        if isinstance(sid, str) and sid and sid != self.sdk_session_id:
+            self.sdk_session_id = sid
+            if self.on_session is not None:
+                self.on_session(sid)
+
+    async def _opening_message(self, brief: str) -> str | None:
+        """The first message of the run: its brief, or when resuming, the user's next message."""
+        message = await self._prompt_follow_up() if self.resume_session else brief
+        if message:
+            self.message_store.save_prompt(message)
+        return message
 
     def __init__(
         self,

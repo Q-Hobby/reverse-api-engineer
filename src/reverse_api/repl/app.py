@@ -380,8 +380,10 @@ class Session:
             self.view.notice("a run is open · /new ends it first")
         elif run is None or not self.cli.resumable(run):
             self.view.notice(f"run {run_id} has no saved session to resume" if run else f"no run {run_id}")
-        elif st.sdk != "claude":
-            self.view.notice("resume works with the claude sdk · switch it in /settings")
+        elif run["sdk_session"].get("sdk") == "opencode":
+            # OpenCode runs still use the classic screen, which asks for the next message there.
+            self.view.run_details(run)
+            self.classic(lambda: self.cli.resume_run(run_id))
         else:
             self.view.run_details(run)
             self.view.gap()

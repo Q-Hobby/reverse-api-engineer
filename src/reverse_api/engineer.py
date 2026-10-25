@@ -44,32 +44,14 @@ class ClaudeEngineer(BaseEngineer):
     # follow-up loop must not offer another turn.
     _context_overflowed = False
 
-    # The run's SDK session, kept so /resume can reopen it. With resume_session set the run reopens
-    # that session and starts from the user's next message. The SDK's total_cost_usd counts the whole
-    # session, so cost_before (what the run spent earlier) is taken off to report this stretch only.
-    sdk_session_id: str | None = None
-    resume_session: str | None = None
-    cost_before = 0.0
-    on_session: Callable[[str], None] | None = None
-
     def _note_session(self, message: Any) -> None:
         sid = getattr(message, "session_id", None)
         if sid is None and isinstance(message, SystemMessage):
             sid = message.data.get("session_id")
-        if isinstance(sid, str) and sid and sid != self.sdk_session_id:
-            self.sdk_session_id = sid
-            if self.on_session is not None:
-                self.on_session(sid)
+        self._record_session(sid)
 
     def _resume_options(self) -> dict[str, Any]:
         return {"resume": self.resume_session} if self.resume_session else {}
-
-    async def _opening_message(self, brief: str) -> str | None:
-        """The first query: the run's brief, or when resuming, the user's next message."""
-        message = await self._prompt_follow_up() if self.resume_session else brief
-        if message:
-            self.message_store.save_prompt(message)
-        return message
 
     def _print_context_overflow_help(self) -> None:
         """Explain a context-window overflow and how to continue."""
@@ -297,7 +279,7 @@ class ClaudeEngineer(BaseEngineer):
 
                         from .pricing import calculate_cost
 
-                        # total_cost_usd is the SDK's own figure, cumulative over the session.
+                        # total_cost_usd is the SDK's own figure, cumulative over the session, a resumed one included.
                         cost = (
                             max(0.0, float(message.total_cost_usd) - self.cost_before)
                             if isinstance(message.total_cost_usd, (int, float))
@@ -429,7 +411,7 @@ def run_reverse_engineering(
 ) -> dict[str, Any] | None:
     """Run reverse engineering with the specified SDK.
 
-    resume_session, cost_before and on_session apply to the Claude SDK only, see ClaudeEngineer.
+    resume_session, cost_before and on_session reopen and record the SDK session, see BaseEngineer.
 
     Args:
         sdk: "claude", "opencode", "copilot", or "cursor" - determines which SDK to use
@@ -521,7 +503,7 @@ def run_reverse_engineering(
             output_mode=output_mode,
             interactive=interactive,
         )
-        engineer.resume_session, engineer.cost_before, engineer.on_session = resume_session, cost_before, on_session
+    engineer.resume_session, engineer.cost_before, engineer.on_session = resume_session, cost_before, on_session
 
     if json_event_sink is not None:
         from .json_stream import attach_json_stream_to_engineer

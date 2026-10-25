@@ -2163,7 +2163,7 @@ def run_auto_capture(
         )
         console.print()
 
-    sdk = config_manager.get("sdk", "claude")
+    sdk = _session_sdk(resume) or config_manager.get("sdk", "claude")
     if model is None:
         model = default_model_for_configured_sdk(sdk)
 
@@ -2258,12 +2258,14 @@ def run_auto_capture(
                 interactive=interactive,
                 headless=headless,
             )
-            engineer.on_session = lambda sid: session_manager.update_run(run_id=run_id, sdk_session={"id": sid, "mode": "agent"})
-            if resume:
-                engineer.resume_session = resume["sdk_session"]["id"]
-                engineer.cost_before = float((resume.get("usage") or {}).get("estimated_cost_usd") or 0)
-                # A new browser stretch records its own HAR instead of replacing the run's capture.
-                engineer.mcp_run_id = f"{run_id}-{int(time.time())}"
+
+        # CopilotAutoEngineer wraps the CopilotEngineer that owns the session.
+        core = engineer._engineer if isinstance(engineer, CopilotAutoEngineer) else engineer
+        core.on_session = _session_recorder(run_id, "agent", sdk)
+        if resume:
+            core.resume_session, core.cost_before = _resume_point(resume)
+            # A new browser stretch records its own HAR instead of replacing the run's capture.
+            engineer.mcp_run_id = f"{run_id}-{int(time.time())}"
 
         if json_event_sink is not None:
             from .json_stream import attach_json_stream_to_engineer
@@ -2543,9 +2545,11 @@ def run_engineer(
             har_dir = Path(paths.get("har_dir", get_har_dir(run_id, None)))
             har_path = har_dir / "recording.har"
 
-    sdk = config_manager.get("sdk", "claude")
+    sdk = _session_sdk(resume) or config_manager.get("sdk", "claude")
     enable_sync = config_manager.get("real_time_sync", True)
     output_language = config_manager.get("output_language", "python")
+    resume_session, cost_before = _resume_point(resume) if resume else (None, 0.0)
+    on_session = _session_recorder(run_id, "engineer", sdk)
 
     if sdk == "opencode":
         result = run_reverse_engineering(
@@ -2564,6 +2568,9 @@ def run_engineer(
             output_mode=output_mode,
             interactive=interactive,
             json_event_sink=json_event_sink,
+            resume_session=resume_session,
+            cost_before=cost_before,
+            on_session=on_session,
         )
     elif sdk == "copilot":
         result = run_reverse_engineering(
@@ -2581,6 +2588,9 @@ def run_engineer(
             output_mode=output_mode,
             interactive=interactive,
             json_event_sink=json_event_sink,
+            resume_session=resume_session,
+            cost_before=cost_before,
+            on_session=on_session,
         )
     elif sdk == "cursor":
         _cs = config_manager.get("cursor_setting_sources")
@@ -2603,6 +2613,9 @@ def run_engineer(
             output_mode=output_mode,
             interactive=interactive,
             json_event_sink=json_event_sink,
+            resume_session=resume_session,
+            cost_before=cost_before,
+            on_session=on_session,
         )
     else:
         result = run_reverse_engineering(
@@ -2619,9 +2632,9 @@ def run_engineer(
             output_mode=output_mode,
             interactive=interactive,
             json_event_sink=json_event_sink,
-            resume_session=resume["sdk_session"]["id"] if resume else None,
-            cost_before=float(((resume or {}).get("usage") or {}).get("estimated_cost_usd") or 0),
-            on_session=lambda sid: session_manager.update_run(run_id=run_id, sdk_session={"id": sid, "mode": "engineer"}),
+            resume_session=resume_session,
+            cost_before=cost_before,
+            on_session=on_session,
         )
 
     if result:
@@ -2681,6 +2694,23 @@ def resumable(run: dict[str, Any] | None) -> bool:
     return bool(((run or {}).get("sdk_session") or {}).get("id"))
 
 
+def _session_sdk(resume: dict[str, Any] | None) -> str | None:
+    """The SDK a resumed run's session belongs to; sessions saved before the SDK was recorded were Claude's."""
+    if not resume:
+        return None
+    return str(resume["sdk_session"].get("sdk") or "claude")
+
+
+def _resume_point(resume: dict[str, Any]) -> tuple[str, float]:
+    """The session to reopen and what the run had spent before it."""
+    return str(resume["sdk_session"]["id"]), float((resume.get("usage") or {}).get("estimated_cost_usd") or 0)
+
+
+def _session_recorder(run_id: str, mode: str, sdk: str) -> Callable[[str], None]:
+    """Saves an engine's SDK session on its run as soon as the SDK names it, so even a cut-short run can be resumed."""
+    return lambda sid: session_manager.update_run(run_id=run_id, sdk_session={"id": sid, "mode": mode, "sdk": sdk})
+
+
 def _run_totals(before: dict[str, Any], now: dict[str, Any]) -> dict[str, Any]:
     """A resumed run's usage: this stretch's tokens and cost added to what the run spent before."""
     totals = {**before, **now}
@@ -2691,13 +2721,10 @@ def _run_totals(before: dict[str, Any], now: dict[str, Any]) -> dict[str, Any]:
 
 
 def resume_run(run_id: str) -> dict[str, Any] | None:
-    """Reopen a past Claude run's SDK session; the user's next message continues that conversation."""
+    """Reopen a past run's SDK session with the SDK it ran on; the user's next message continues that conversation."""
     run = session_manager.get_run(run_id)
     if run is None or not resumable(run):
         console.print(f" [dim]run {escape(run_id)} has no saved session to resume[/dim]")
-        return None
-    if config_manager.get("sdk", "claude") != "claude":
-        console.print(" [dim]resume works with the claude sdk · switch it in /settings[/dim]")
         return None
     model = run.get("model") or None
     if run["sdk_session"].get("mode") == "agent":

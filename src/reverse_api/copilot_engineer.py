@@ -64,6 +64,15 @@ class CopilotEngineer(BaseEngineer):
 
         return ask_user_question
 
+    async def _open_copilot_session(self, client: Any, config: Any) -> Any:
+        """A new Copilot session, or the saved one when resuming: the Copilot CLI keeps sessions between runs."""
+        if self.resume_session:
+            session = await client.resume_session(self.resume_session, config)
+        else:
+            session = await client.create_session(config)
+        self._record_session(session.session_id)
+        return session
+
     async def analyze_and_generate(self) -> dict[str, Any] | None:
         """Run the reverse engineering analysis with GitHub Copilot."""
         try:
@@ -78,8 +87,10 @@ class CopilotEngineer(BaseEngineer):
         self.ui.start_analysis()
 
         system_prompt, user_message = self._build_prompts()
-        prompt = f"{system_prompt}\n\n{user_message}"
-        self.message_store.save_prompt(user_message)
+        opening = await self._opening_message(user_message)
+        if not opening:
+            return {}
+        prompt = opening if self.resume_session else f"{system_prompt}\n\n{user_message}"
 
         done_event = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -126,15 +137,14 @@ class CopilotEngineer(BaseEngineer):
             )
             await client.start()
 
-            session = await client.create_session(
-                {
-                    "model": self.copilot_model,
-                    "streaming": True,
-                    "infinite_sessions": {"enabled": True},
-                    "tools": [ask_user_tool],
-                    "on_permission_request": PermissionHandler.approve_all,
-                }
-            )
+            config: Any = {
+                "model": self.copilot_model,
+                "streaming": True,
+                "infinite_sessions": {"enabled": True},
+                "tools": [ask_user_tool],
+                "on_permission_request": PermissionHandler.approve_all,
+            }
+            session = await self._open_copilot_session(client, config)
 
             session.on(on_event)
 

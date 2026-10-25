@@ -439,8 +439,10 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
                 return None
 
         system_prompt, user_message = self._get_active_prompts()
-        active_prompt = f"{system_prompt}\n\n{user_message}"
-        self.message_store.save_prompt(user_message)
+        opening = await self._opening_message(user_message)
+        if not opening:
+            return {}
+        active_prompt = opening if self.resume_session else f"{system_prompt}\n\n{user_message}"
 
         try:
             auth = self._get_auth()
@@ -448,11 +450,7 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
                 if not await self._prepare_server(client):
                     return None
 
-                # Create session first
-                session_r = await client.post("/session", json={})
-                session_r.raise_for_status()
-                session_data = session_r.json()
-                self._session_id = session_data["id"]
+                self._session_id = await self._open_session(client)
                 self.opencode_ui.session_created(self._session_id)
 
                 mcp_config = self._get_opencode_mcp_config()
@@ -659,8 +657,10 @@ class CopilotAutoEngineer:
                 return None
 
         system_prompt, user_message = ClaudeAutoEngineer._build_auto_prompts(eng)
-        auto_prompt = f"{system_prompt}\n\n{user_message}"
-        eng.message_store.save_prompt(user_message)
+        opening = await eng._opening_message(user_message)
+        if not opening:
+            return {}
+        auto_prompt = opening if eng.resume_session else f"{system_prompt}\n\n{user_message}"
 
         done_event = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -748,19 +748,18 @@ class CopilotAutoEngineer:
                 eng.message_store.save_tool_result(tool_name, is_error, str(output) if output else None)
                 return {}
 
-            session = await client.create_session(
-                {
-                    "model": eng.copilot_model,
-                    "streaming": True,
-                    "infinite_sessions": {"enabled": True},
-                    "mcp_servers": mcp_servers_payload,
-                    "on_permission_request": PermissionHandler.approve_all,
-                    "hooks": {
-                        "on_pre_tool_use": on_pre_tool_use,
-                        "on_post_tool_use": on_post_tool_use,
-                    },
-                }
-            )
+            config: Any = {
+                "model": eng.copilot_model,
+                "streaming": True,
+                "infinite_sessions": {"enabled": True},
+                "mcp_servers": mcp_servers_payload,
+                "on_permission_request": PermissionHandler.approve_all,
+                "hooks": {
+                    "on_pre_tool_use": on_pre_tool_use,
+                    "on_post_tool_use": on_post_tool_use,
+                },
+            }
+            session = await eng._open_copilot_session(client, config)
 
             session.on(on_event)
             await session.send({"prompt": auto_prompt})

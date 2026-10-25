@@ -351,7 +351,7 @@ class CursorEngineer(BaseEngineer):
                 if t == "stream" and isinstance(obj.get("event"), dict):
                     await self._dispatch_stream_event(obj["event"])
                 elif t == "agent":
-                    pass
+                    self._record_session(obj.get("agentId"))
                 elif t == "done":
                     run_result = obj.get("runResult") or {}
                     if run_result.get("status") == "error":
@@ -429,12 +429,13 @@ class CursorEngineer(BaseEngineer):
             return None
 
         system_prompt, user_message = self._build_prompts()
-        self.message_store.save_prompt(user_message)
-        combined = f"{system_prompt}\n\n{user_message}"
-
-        agent_id: str | None = None
+        opening = await self._opening_message(user_message)
+        if not opening:
+            return {}
+        # A resumed agent already holds the brief; it only gets the user's message.
+        agent_id: str | None = self.resume_session
         last_result: dict[str, Any] | None = None
-        turn_prompt: str = combined
+        turn_prompt: str = opening if self.resume_session else f"{system_prompt}\n\n{user_message}"
 
         try:
             while True:
@@ -572,13 +573,14 @@ class CursorAutoEngineer(CursorEngineer):
                 return None
 
         system_prompt, user_message = ClaudeAutoEngineer._build_auto_prompts(self)
-        self.message_store.save_prompt(user_message)
-        combined = f"{system_prompt}\n\n{user_message}"
+        opening = await self._opening_message(user_message)
+        if not opening:
+            return {}
 
         mcp = self._cursor_mcp_servers()
-        agent_id: str | None = None
+        agent_id: str | None = self.resume_session
         last_result: dict[str, Any] | None = None
-        turn_prompt: str = combined
+        turn_prompt: str = opening if self.resume_session else f"{system_prompt}\n\n{user_message}"
 
         try:
             while True:
