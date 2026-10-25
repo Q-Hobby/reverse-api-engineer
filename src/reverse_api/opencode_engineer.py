@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
+from rich.markup import escape
 
 from .base_engineer import BaseEngineer
 from .config import DEFAULT_OPENCODE_MODEL, DEFAULT_OPENCODE_PROVIDER
@@ -308,7 +309,7 @@ class OpenCodeEngineer(BaseEngineer):
             error_msg = format_error(e)
             debug_log(f"ConnectError in analyze_and_generate: {error_msg}")
             self.opencode_ui.error("Connection error")
-            self.opencode_ui.console.print(f"\n[dim]Details: {error_msg}[/dim]")
+            self.opencode_ui.console.print(f"\n[dim]Details: {escape(str(error_msg))}[/dim]")
             self.opencode_ui.console.print("\n[dim]Please run: opencode serve[/dim]")
             self.message_store.save_error(f"Connection error: {error_msg}")
             return None

@@ -384,3 +384,60 @@ class TestDisplayFooter:
         output = console.file.getvalue()
         assert "via cli" in output
         assert "*" in output
+
+
+class TestAgentTextIsNotMarkup:
+    """Agent, tool and site text can contain rich markup syntax; it must print literally."""
+
+    TRICKY = "GET /lst/[<make>]/[/<model>] [bold]x[/] [link=y]"
+
+    def _console(self):
+        return Console(file=StringIO(), no_color=True, width=200)
+
+    def test_claude_ui(self):
+        from reverse_api.tui import print_session_header
+
+        console = self._console()
+        ui = ClaudeUI(verbose=True)
+        ui.console = console
+        ui.thinking(self.TRICKY)
+        ui.progress(self.TRICKY)
+        ui.tool_start("Bash", {"command": self.TRICKY})
+        ui.tool_start("mcp__chrome-devtools__navigate_page", {"url": self.TRICKY})
+        ui.tool_result("Bash", output=self.TRICKY)
+        ui.tool_result("mcp__chrome-devtools__list_network_requests", output=f"{self.TRICKY}\n{self.TRICKY}")
+        ui.tool_result("Read", is_error=True, output=self.TRICKY)
+        ui.todo_updated([{"content": self.TRICKY, "status": "pending"}])
+        ui.success(self.TRICKY, self.TRICKY)
+        ui.error(self.TRICKY)
+        print_session_header(console, "run1", self.TRICKY)
+        assert console.file.getvalue().count(self.TRICKY) >= 10
+
+    def test_opencode_ui(self):
+        from reverse_api.opencode_ui import OpenCodeUI
+
+        console = self._console()
+        ui = OpenCodeUI(console=console)
+        ui.tool_start("bash", {"command": self.TRICKY[:50]})
+        ui.tool_result("bash", is_error=True, output=self.TRICKY)
+        ui.thinking(self.TRICKY * 2)
+        ui.permission_requested("bash", self.TRICKY)
+        ui.session_retry(2, self.TRICKY)
+        ui.error(self.TRICKY)
+        ui.error("[/oops] raw error that looks like markup")
+        out = console.file.getvalue()
+        assert self.TRICKY in out
+        assert "[/oops] raw error" in out
+
+    def test_collector_ui(self):
+        from reverse_api.collector_ui import CollectorUI
+
+        console = self._console()
+        ui = CollectorUI(verbose=True)
+        ui.console = console
+        ui.item_saved(self.TRICKY[:40])
+        ui.thinking(self.TRICKY * 2, max_length=200)
+        ui.tool_start("WebFetch", {"url": self.TRICKY[:40]})
+        ui.collection_complete(3, self.TRICKY)
+        ui.error(self.TRICKY)
+        assert console.file.getvalue().count(self.TRICKY) >= 3

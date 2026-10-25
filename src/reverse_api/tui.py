@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
@@ -87,7 +88,7 @@ class ClaudeUI:
         header = self._tool_header_label(tool_name)
         input_summary = self._summarize_input(tool_name, args)
 
-        self.console.print(f"  [dim]>[/dim] {icon} [white]{header}[/white]")
+        self.console.print(f"  [dim]>[/dim] {icon} [white]{escape(header)}[/white]")
         if input_summary:
             self.console.print(f"      {input_summary}")
 
@@ -96,12 +97,12 @@ class ClaudeUI:
         _ = call_id  # accepted for parity with json-stream; not rendered
         tl = tool_name.lower()
         if is_error:
-            self.console.print(f"  [dim]![/dim] [red]{self._tool_header_label(tool_name)} failed[/red]")
+            self.console.print(f"  [dim]![/dim] [red]{escape(self._tool_header_label(tool_name))} failed[/red]")
             if output and self.verbose:
                 err = str(output).strip().replace("\n", " ")
                 if len(err) > 200:
                     err = err[:197] + "..."
-                self.console.print(f"      [dim]{err}[/dim]")
+                self.console.print(f"      [dim]{escape(err)}[/dim]")
         elif tool_name == "Bash" and output and self.verbose:
             # Display bash output
             output_str = str(output).strip()
@@ -109,7 +110,7 @@ class ClaudeUI:
                 output_lines = output_str.split("\n")
                 max_lines = 30
                 for line in output_lines[:max_lines]:
-                    self.console.print(f"  [dim]│[/dim] [dim]{line}[/dim]")
+                    self.console.print(f"  [dim]│[/dim] [dim]{escape(line)}[/dim]")
                 if len(output_lines) > max_lines:
                     self.console.print(f"  [dim]│[/dim] [dim]... ({len(output_lines) - max_lines} more lines)[/dim]")
         elif output and self.verbose and (tl.startswith("mcp") or "web" in tl or "fetch" in tl):
@@ -120,9 +121,9 @@ class ClaudeUI:
                 lines = preview.split("\n")[:12]
                 self.console.print("  [dim]│[/dim] [dim]result[/dim]")
                 for line in lines:
-                    self.console.print(f"  [dim]│[/dim] [dim]{line[:140]}{'…' if len(line) > 140 else ''}[/dim]")
+                    self.console.print(f"  [dim]│[/dim] [dim]{escape(line[:140])}{'…' if len(line) > 140 else ''}[/dim]")
             elif preview:
-                self.console.print(f"  [dim]│[/dim] [dim]{preview}[/dim]")
+                self.console.print(f"  [dim]│[/dim] [dim]{escape(preview)}[/dim]")
 
     def todo_updated(self, todos: list) -> None:
         """Show agent todo list (Cursor / Claude todo-style tools)."""
@@ -155,7 +156,7 @@ class ClaudeUI:
             line = (t.get("activeForm") or t.get("content") or "").strip() or "(empty)"
             if len(line) > 76:
                 line = line[:73] + "..."
-            self.console.print(f"      [dim]{ic}[/dim]  {line}")
+            self.console.print(f"      [dim]{ic}[/dim]  {escape(line)}")
         if len(todos) > 14:
             self.console.print(f"      [dim]… {len(todos) - 14} more[/dim]")
         self.console.print()
@@ -171,7 +172,7 @@ class ClaudeUI:
         display_text = text.replace("\n", " ").strip()
         if len(display_text) > max_length:
             display_text = display_text[:max_length] + "..."
-        self.console.print(f"  [dim].. {display_text}[/dim]")
+        self.console.print(f"  [dim].. {escape(display_text)}[/dim]")
 
     def thinking_block(self, text: str, max_chars: int = 8000) -> None:
         """Print one cohesive model reasoning / reply block (not token-by-token).
@@ -192,21 +193,21 @@ class ClaudeUI:
 
     def progress(self, message: str) -> None:
         """Display a progress message."""
-        self.console.print(f"  [dim italic]{message}[/dim italic]")
+        self.console.print(f"  [dim italic]{escape(message)}[/dim italic]")
 
     def success(self, script_path: str, local_path: str | None = None) -> None:
         """Display success message with generated script path."""
         self.console.print()
         self.console.print(" [dim]decoding complete[/dim]")
-        self.console.print(f" [dim]internal:[/dim] [white]{script_path}[/white]")
+        self.console.print(f" [dim]internal:[/dim] [white]{escape(script_path)}[/white]")
         if local_path:
-            self.console.print(f" [dim]synced:[/dim]   [white]{local_path}[/white]")
+            self.console.print(f" [dim]synced:[/dim]   [white]{escape(local_path)}[/white]")
         self.console.print()
 
     def error(self, message: str) -> None:
         """Display error message."""
         self.console.print()
-        self.console.print(f" [dim]![/dim] [red]error:[/red] {message}")
+        self.console.print(f" [dim]![/dim] [red]error:[/red] {escape(message)}")
         self.console.print(f" [dim]{ERROR_CTA}[/dim]")
 
     def _coerce_tool_input(self, tool_input: Any) -> dict:
@@ -255,7 +256,7 @@ class ClaudeUI:
         if tl == "call_mcp_tool":
             mn = tool_input.get("name") or tool_input.get("server") or tool_input.get("tool")
             if isinstance(mn, str) and mn:
-                return f"[dim]{mn[:70]}{'…' if len(mn) > 70 else ''}[/dim]"
+                return f"[dim]{escape(mn[:70])}{'…' if len(mn) > 70 else ''}[/dim]"
             return ""
         if tl.startswith("mcp"):
             keys = ("url", "path", "file_path", "command", "query", "pattern", "browserTab", "tabId", "text")
@@ -264,7 +265,7 @@ class ClaudeUI:
                 if isinstance(v, str) and v.strip():
                     vv = v.replace("\n", " ").strip()
                     cap = 72 if k in ("url", "path", "file_path") else 60
-                    return f"[dim]{k}[/dim] [dim]{vv[:cap]}{'…' if len(vv) > cap else ''}[/dim]"
+                    return f"[dim]{k}[/dim] [dim]{escape(vv[:cap])}{'…' if len(vv) > cap else ''}[/dim]"
             args = tool_input.get("arguments")
             if isinstance(args, str) and args.strip().startswith("{"):
                 try:
@@ -276,42 +277,42 @@ class ClaudeUI:
                     v = args.get(k)
                     if isinstance(v, str) and v.strip():
                         vv = v.replace("\n", " ").strip()
-                        return f"[dim]{k}[/dim] [dim]{vv[:70]}{'…' if len(vv) > 70 else ''}[/dim]"
+                        return f"[dim]{k}[/dim] [dim]{escape(vv[:70])}{'…' if len(vv) > 70 else ''}[/dim]"
             blob = json.dumps(tool_input, default=str)
             if len(blob) > 90:
-                return f"[dim]{blob[:87]}…[/dim]"
-            return f"[dim]{blob}[/dim]"
+                return f"[dim]{escape(blob[:87])}…[/dim]"
+            return f"[dim]{escape(blob)}[/dim]"
         if tool_name == "Read" or tl == "read":
             path = tool_input.get("file_path") or tool_input.get("path", "")
-            return f"[dim]{self._truncate_path(path)}[/dim]"
+            return f"[dim]{escape(self._truncate_path(path))}[/dim]"
         elif tool_name == "Write" or tl == "write":
             path = tool_input.get("file_path") or tool_input.get("path", "")
-            return f"[dim]→ {self._truncate_path(path)}[/dim]"
+            return f"[dim]→ {escape(self._truncate_path(path))}[/dim]"
         elif tool_name == "Edit" or tl == "edit":
             path = tool_input.get("file_path") or tool_input.get("path", "")
-            return f"[dim]{self._truncate_path(path)}[/dim]"
+            return f"[dim]{escape(self._truncate_path(path))}[/dim]"
         elif tool_name == "Bash" or tl in ("bash", "shell"):
             cmd = str(tool_input.get("command", ""))
             cmd = cmd.replace("\n", " ").strip()
-            return f"[dim]$ {cmd[:60]}{'...' if len(cmd) > 60 else ''}[/dim]"
+            return f"[dim]$ {escape(cmd[:60])}{'...' if len(cmd) > 60 else ''}[/dim]"
         elif tool_name in ("Grep", "Glob") or tl in ("grep", "glob"):
             pattern = tool_input.get("pattern", tool_input.get("query", ""))
-            return f"[dim]'{pattern}'[/dim]"
+            return f"[dim]'{escape(str(pattern))}'[/dim]"
         elif tool_name == "WebSearch" or tl == "websearch":
             query = tool_input.get("query", "")
-            return f"[dim]'{query[:50]}{'...' if len(query) > 50 else ''}'[/dim]"
+            return f"[dim]'{escape(query[:50])}{'...' if len(query) > 50 else ''}'[/dim]"
         elif tool_name == "WebFetch" or tl == "webfetch":
             url = tool_input.get("url", "")
-            return f"[dim]{url[:60]}{'...' if len(url) > 60 else ''}[/dim]"
+            return f"[dim]{escape(url[:60])}{'...' if len(url) > 60 else ''}[/dim]"
         elif tool_name == "browser_navigate":
             url = tool_input.get("url", "")
-            return f"[dim]{url[:50]}{'...' if len(url) > 50 else ''}[/dim]"
+            return f"[dim]{escape(url[:50])}{'...' if len(url) > 50 else ''}[/dim]"
         elif tool_name == "browser_click":
             ref = tool_input.get("elementRef", "")
-            return f"[dim]ref={ref[:40]}{'...' if len(ref) > 40 else ''}[/dim]"
+            return f"[dim]ref={escape(ref[:40])}{'...' if len(ref) > 40 else ''}[/dim]"
         elif tool_name == "browser_type":
             text = tool_input.get("text", "")[:30]
-            return f"[dim]'{text}{'...' if len(text) >= 30 else ''}'[/dim]"
+            return f"[dim]'{escape(text)}{'...' if len(text) >= 30 else ''}'[/dim]"
         elif tool_name == "browser_snapshot":
             return "[dim]page structure[/dim]"
         return ""
@@ -324,15 +325,15 @@ class ClaudeUI:
 
     def sync_started(self, dest_dir: str) -> None:
         """Display when file sync starts."""
-        self.console.print(f"  [dim]⟳ sync: active → {dest_dir}[/dim]")
+        self.console.print(f"  [dim]⟳ sync: active → {escape(dest_dir)}[/dim]")
 
     def sync_flash(self, message: str) -> None:
         """Display a brief sync notification."""
-        self.console.print(f"  [dim]✓ {message}[/dim]")
+        self.console.print(f"  [dim]✓ {escape(message)}[/dim]")
 
     def sync_error(self, message: str) -> None:
         """Display a sync error."""
-        self.console.print(f"  [dim]![/dim] [yellow]sync error:[/yellow] {message}")
+        self.console.print(f"  [dim]![/dim] [yellow]sync error:[/yellow] {escape(message)}")
 
 
 def get_model_choices() -> list[dict]:
@@ -383,7 +384,7 @@ def print_session_header(
         console.print(
             f" [{THEME_DIM}]model[/{THEME_DIM}]  [{THEME_SECONDARY}]{model or '---'}[/{THEME_SECONDARY}]"
         )
-    console.print(f" [{mode_color}]{mode_label}[/{mode_color}]   [{THEME_SECONDARY}]{prompt}[/{THEME_SECONDARY}]")
+    console.print(f" [{mode_color}]{mode_label}[/{mode_color}]   [{THEME_SECONDARY}]{escape(prompt)}[/{THEME_SECONDARY}]")
     console.print()
 
 

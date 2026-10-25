@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import questionary
+from rich.markup import escape
 
 from .messages import MessageStore
 from .opencode_ui import OpenCodeUI
@@ -134,7 +135,7 @@ class BaseEngineer(ABC):
     def _handle_cli_stderr(self, line: str) -> None:
         """Filter CLI subprocess stderr. Shows full output in DEBUG mode, otherwise shows a single clean error."""
         if DEBUG:
-            self.ui.console.print(f"[dim]  stderr: {line.rstrip()}[/dim]")
+            self.ui.console.print(f"[dim]  stderr: {escape(line.rstrip())}[/dim]")
             return
 
         # Known noisy errors from the CLI control protocol — show once
@@ -251,7 +252,7 @@ class BaseEngineer(ABC):
                 continue
 
             if header:
-                self.ui.console.print(f"  [dim]{header}[/dim]")
+                self.ui.console.print(f"  [dim]{escape(str(header))}[/dim]")
 
             try:
                 if multi_select:
@@ -349,7 +350,7 @@ class BaseEngineer(ABC):
                             raise KeyboardInterrupt
                         answers[question_text] = answer.strip()
 
-                self.ui.console.print(f"  [dim]→ {answers[question_text]}[/dim]")
+                self.ui.console.print(f"  [dim]→ {escape(str(answers[question_text]))}[/dim]")
 
             except KeyboardInterrupt:
                 self.ui.console.print("  [dim]User cancelled question[/dim]")
