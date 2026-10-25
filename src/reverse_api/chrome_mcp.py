@@ -26,7 +26,11 @@ AUTO_CONNECT_SETUP = (
 @dataclass(frozen=True)
 class AutoConnectStatus:
     ok: bool
-    message: str
+    reason: str
+
+    @property
+    def message(self) -> str:
+        return self.reason if self.ok else f"{self.reason}; {AUTO_CONNECT_SETUP}"
 
 
 def chrome_user_data_dir() -> Path | None:
@@ -44,15 +48,17 @@ def check_auto_connect(user_data_dir: Path | None = None, timeout: float = 1.0) 
     """Report whether a running Chrome accepts auto-connect, without launching anything."""
     data_dir = user_data_dir if user_data_dir is not None else chrome_user_data_dir()
     if data_dir is None:
-        return AutoConnectStatus(False, f"could not locate the Chrome profile directory; {AUTO_CONNECT_SETUP}")
+        return AutoConnectStatus(False, "could not locate the Chrome profile directory")
     port_file = data_dir / "DevToolsActivePort"
     try:
         port = int(port_file.read_text(encoding="utf-8").splitlines()[0].strip())
-    except (OSError, ValueError, IndexError):
-        return AutoConnectStatus(False, f"Chrome remote debugging is not enabled; {AUTO_CONNECT_SETUP}")
+    except FileNotFoundError:
+        return AutoConnectStatus(False, "Chrome remote debugging is not enabled")
+    except (OSError, ValueError, IndexError) as e:
+        return AutoConnectStatus(False, f"could not read {port_file}: {e}")
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=timeout):
             pass
     except OSError:
-        return AutoConnectStatus(False, f"Chrome is not running with remote debugging on port {port}; {AUTO_CONNECT_SETUP}")
+        return AutoConnectStatus(False, f"Chrome is not running with remote debugging on port {port}")
     return AutoConnectStatus(True, f"Chrome remote debugging reachable on port {port}")

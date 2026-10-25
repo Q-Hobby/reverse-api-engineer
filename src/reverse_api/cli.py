@@ -2100,7 +2100,7 @@ def run_auto_capture(
             console.print(" [dim] 4. node.js v20.19+[/dim]")
             console.print(" [dim]or run with --headless, or pick another provider in /settings[/dim]")
             console.print()
-            console.print(f" [red]error:[/red] {auto_connect.message}")
+            console.print(f" [red]error:[/red] {auto_connect.reason}")
             return {"error": auto_connect.message, "error_kind": "config_invalid", "error_reported": True}
         console.print(" [dim]controlling your real chrome browser[/dim]")
         console.print(" [dim]existing sessions, cookies, and auth available[/dim]")

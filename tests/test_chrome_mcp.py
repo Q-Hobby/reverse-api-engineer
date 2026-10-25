@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from reverse_api.chrome_mcp import AutoConnectStatus, check_auto_connect
+from reverse_api.chrome_mcp import CHROME_DEVTOOLS_MCP_PACKAGE, AutoConnectStatus, check_auto_connect
 from reverse_api.config import DEFAULT_CONFIG
 
 
@@ -48,6 +48,10 @@ class TestCheckAutoConnect:
             assert check_auto_connect(tmp_path).ok
 
 
+def test_chrome_devtools_mcp_is_pinned_to_1_12():
+    assert CHROME_DEVTOOLS_MCP_PACKAGE == "chrome-devtools-mcp@1.12"
+
+
 def test_chrome_mcp_is_the_default_provider():
     assert DEFAULT_CONFIG["agent_provider"] == "chrome-mcp"
 
@@ -67,7 +71,8 @@ class TestDryRunAutoConnect:
         result, payload = self._invoke(tmp_path, AutoConnectStatus(False, "not enabled"))
         assert result.exit_code == 1
         check = next(c for c in payload["checks"] if c["name"] == "chrome-mcp:auto-connect")
-        assert check == {"name": "chrome-mcp:auto-connect", "status": "error", "message": "not enabled"}
+        assert check["status"] == "error"
+        assert check["message"].startswith("not enabled; ") and "chrome://inspect" in check["message"]
         assert payload["error_kind"] == "config_invalid"
 
     def test_headed_with_auto_connect_passes(self, tmp_path):
@@ -92,6 +97,6 @@ def test_agent_json_fails_fast_without_auto_connect(tmp_path):
     payload = json.loads(result.stdout.strip())
     assert result.exit_code == 1
     assert payload["status"] == "error"
-    assert payload["error"] == "not enabled"
+    assert payload["error"].startswith("not enabled; ")
     assert payload["error_kind"] == "config_invalid"
     sessions.add_run.assert_not_called()

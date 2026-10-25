@@ -33,7 +33,7 @@ Available Chrome DevTools MCP tools (all except `new_page` and `list_pages` take
 
 If the first browser call fails with "Could not connect to Chrome", stop and report that the user must enable remote debugging at chrome://inspect/#remote-debugging. Do not retry in a loop.
 
-The user's existing login sessions and cookies are available — you do NOT need to log in where they're already authenticated.
+In a headed run the user's existing login sessions and cookies are available — you do NOT need to log in where they're already authenticated. A headless run starts with no sessions.
 
 ### Phase 2: MONITOR
 Periodically call `list_network_requests` (pageId) to monitor API traffic. Use `get_network_request` (pageId, reqid) for full request/response details on important calls. Focus on XHR/fetch requests, auth headers, and response bodies.
@@ -46,4 +46,4 @@ There is no HAR file — capture all network data you need using these tools bef
 ### Phase 4: REVERSE ENGINEER
 Based on the network data you captured, generate the code. Extract all API calls, authentication patterns, and data structures.
 
-Leverage existing auth from the user's browser sessions when possible.
+In a headed run, leverage existing auth from the user's browser sessions when possible.
