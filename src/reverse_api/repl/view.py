@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 import re
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -120,6 +122,11 @@ class AgentMarkdown(Markdown):
         self.parsed = MarkdownIt().enable("strikethrough").enable("table").disable(["html_inline", "html_block"]).parse(markup)
 
 
+def escape_partial(text: str) -> str:
+    """Half-streamed Markdown, kept from opening a code block that has not closed yet."""
+    return text + "\n```" if text.count("```") % 2 else text
+
+
 def link(text: str, target: Path | str) -> str:
     url = target.as_uri() if isinstance(target, Path) else target
     return f"[link={url}]{escape(text)}[/link]"
@@ -188,17 +195,97 @@ class LedgerView:
         self.t = transcript
         self._verb: str | None = None
         self._verb_at = 0.0
+        # A message being revealed, and what arrived after it: engines write from their thread,
+        # the app reveals on its frames, so both go through this lock.
+        self._lock = threading.RLock()
+        self._live: dict[str, Any] | None = None
+        self._pending: list[tuple[RenderableType | Raw, RenderableType | Raw | None]] = []
 
     # writing to the transcript
 
     def out(self, inline: RenderableType | Raw, full: RenderableType | Raw | None = None) -> None:
+        with self._lock:
+            if self._live is not None:
+                self._pending.append((inline, full))  # shown once the message above has finished
+                return
+            self._emit(inline, full)
+
+    def _emit(self, inline: RenderableType | Raw, full: RenderableType | Raw | None = None) -> None:
         added = self.t.add(inline, full)
         if self.st.scroll:
             self.st.scroll += added  # keep the reader's place while output arrives
 
     def gap(self) -> None:
-        if self.t.items and self.t.last() != "":
-            self.out("")
+        with self._lock:
+            last = self._pending[-1][0] if self._pending else self.t.last()
+            if (self._pending or self.t.items) and last != "":
+                self.out("")
+
+    # streaming messages
+
+    def _message_grid(self, text: str) -> Table:
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(width=2, justify="right")
+        grid.add_column(max_width=min(96, width() - 4))
+        grid.add_row(f"[{self.st.accent}]¶[/]", AgentMarkdown(text, code_theme=CODE_THEME))
+        return grid
+
+    def stream(self, delta: str) -> None:
+        """A piece of the agent's text as it is generated."""
+        with self._lock:
+            if self._live is not None and self._live["closing"]:
+                self._finalize()
+            if self._live is None:
+                self.gap()
+                self._live = {"target": "", "shown": 0, "closing": False}
+            self._live["target"] += delta
+
+    def stream_done(self, final: str | None = None) -> None:
+        """The text is complete; ``final`` replaces what streamed, or starts a reveal when nothing did."""
+        with self._lock:
+            if self._live is None:
+                if not final or not final.strip():
+                    return
+                self.gap()
+                self._live = {"target": "", "shown": 0, "closing": False}
+            if final and final.strip():
+                self._live["target"] = final
+            self._live["closing"] = True
+
+    def tick(self) -> None:
+        """Reveal a little more of the live message; called on every frame of the app."""
+        with self._lock:
+            live = self._live
+            if live is None:
+                return
+            target, shown = live["target"], live["shown"]
+            backlog = len(target) - shown
+            if backlog > 0:
+                # Steady at first, faster when text piles up, and stopping on word ends.
+                nxt = min(len(target), shown + max(3, math.ceil(backlog * 0.18)))
+                space = target.find(" ", nxt)
+                live["shown"] = space if 0 <= space - nxt <= 6 else nxt
+            if live["closing"] and live["shown"] >= len(target):
+                self._finalize()
+                return
+            self.t.set_live(Group(self._message_grid(escape_partial(target[: live["shown"]]) + " ▍")))
+
+    def flush_live(self) -> None:
+        """Settle the live message at once, with everything that waited behind it."""
+        with self._lock:
+            if self._live is not None:
+                self._finalize()
+
+    def _finalize(self) -> None:
+        live, self._live = self._live, None
+        self.t.set_live(None)
+        text = (live or {}).get("target", "").strip()
+        if text:
+            self._emit(self._message_grid(text))
+            self._emit("")
+        pending, self._pending = self._pending, []
+        for inline, full in pending:
+            self._emit(inline, full)
 
     # header
 

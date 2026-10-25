@@ -13,6 +13,7 @@ from claude_agent_sdk import (
     PermissionResultAllow,
     ResultMessage,
     SdkMcpTool,
+    StreamEvent,
     TextBlock,
     ToolPermissionContext,
     ToolResultBlock,
@@ -23,6 +24,7 @@ from claude_agent_sdk import (
 )
 
 from .base_engineer import REPORT_CLIENT_VERIFIED_INSTRUCTION, BaseEngineer
+from .repl.bridge import stream_options
 from .utils import build_sdk_effort, build_sdk_env, build_sdk_settings, is_context_overflow_error
 
 # Suppress claude_agent_sdk logs
@@ -172,6 +174,14 @@ class ClaudeEngineer(BaseEngineer):
         Returns a result dict on success, or None on error.
         """
         async for message in client.receive_response():
+            if isinstance(message, StreamEvent):
+                event = message.event
+                delta = event.get("delta") if event.get("type") == "content_block_delta" else None
+                if isinstance(delta, dict) and delta.get("type") == "text_delta" and message.parent_tool_use_id is None:
+                    stream_text = getattr(self.ui, "stream_text", None)
+                    if stream_text:
+                        stream_text(delta.get("text", ""))
+                continue
             # Only ResultMessage carries billable per-query totals; AssistantMessage.usage
             # repeats for every content block of a response and would double count.
             if isinstance(message, ResultMessage) and isinstance(message.usage, dict):
@@ -303,6 +313,7 @@ class ClaudeEngineer(BaseEngineer):
             env=build_sdk_env(),
             **build_sdk_settings(),
             **build_sdk_effort(),
+            **stream_options(),
             stderr=self._handle_cli_stderr,
             mcp_servers={"verification": self._build_verification_mcp_server()},
         )

@@ -329,6 +329,7 @@ class Session:
         st = self.st
         self.bridge.flush_card()
         if isinstance(result, dict) and result.get("error") and not result.get("error_reported"):
+            self.view.flush_live()
             if result["error"] in ("interrupted", "Agent analysis cancelled."):
                 self.view.interrupted()
             else:
@@ -397,6 +398,7 @@ class Session:
     def transcript_view(self, window: Window) -> FormattedText:
         """The header (animated while visible) and the conversation, sliced to the window."""
         st = self.st
+        self.view.tick()
         lines = self.view.header_rows(theta=time.time() * 0.35) + self.transcript.lines()
         rows = window.render_info.window_height if window.render_info else height() - 5
         st.scroll = max(0, min(st.scroll, len(lines) - rows))
@@ -467,7 +469,7 @@ class Session:
             style=Style.from_dict({"": INK}),
             full_screen=True,
             mouse_support=True,
-            refresh_interval=0.1,
+            refresh_interval=0.05,
             output=create_output(stdout=sys.__stdout__),
         )
 
@@ -596,6 +598,7 @@ class Session:
 
     def print_transcript(self) -> None:
         """Leave the session in the terminal's history, like a normal command's output."""
+        self.view.flush_live()
         console = Console(force_terminal=sys.stdout.isatty(), highlight=False, theme=THEME)
         for line in self.view.header_text():
             console.print(line)

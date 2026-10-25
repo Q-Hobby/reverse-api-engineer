@@ -62,9 +62,10 @@ class TestLedgerUI:
         assert st.verb == "writing the client"
 
     def test_agent_text_is_a_message_and_markup_is_literal(self, session):
-        _st, t, _view, b = session
-        LedgerUI(b).thinking("The board uses [/<model>] in its URLs.")
-        assert "¶" in plain(t) and "[/<model>]" in plain(t)
+        _st, t, view, b = session
+        LedgerUI(b).thinking("The board uses /lst/<make>/<model> and [/x] in its URLs.")
+        view.flush_live()
+        assert "¶" in plain(t) and "/lst/<make>/<model>" in plain(t) and "[/x]" in plain(t)
 
     def test_success_shows_the_card_once_usage_arrives(self, session, tmp_path):
         st, t, _view, b = session
@@ -223,6 +224,71 @@ class TestEngineHooks:
         with patch.object(eng.ui, "tool_result") as tool_result:
             asyncio.run(eng._process_streaming_response(Client()))
         tool_result.assert_not_called()
+
+
+class TestSmoothStreaming:
+    def test_deltas_reveal_gradually_then_settle(self, session):
+        _st, t, view, b = session
+        ui = LedgerUI(b)
+        sentence = "Good, the page is loaded. Now let me check the network requests to capture the API calls."
+        for word in sentence.split(" "):
+            ui.stream_text(word + " ")
+        view.tick()
+        partial = plain(t)
+        assert "▍" in partial and "calls." not in partial
+        ui.thinking(sentence)
+        for _ in range(200):
+            view.tick()
+        settled = plain(t)
+        assert "calls." in settled and "▍" not in settled
+
+    def test_items_wait_behind_the_live_message(self, session):
+        _st, t, view, b = session
+        ui = LedgerUI(b)
+        ui.thinking("Now let's test the script.")
+        ui.tool_start("Bash", {"command": "python api_client.py"})
+        assert "01  run" not in plain(t)
+        view.flush_live()
+        text = plain(t)
+        assert text.index("test the script") < text.index("01  run")
+
+    def test_partial_messages_only_for_the_session(self, session):
+        from reverse_api.repl.bridge import stream_options
+
+        _st, _t, _view, b = session
+        assert stream_options() == {}
+        bridge_mod.activate(b)
+        try:
+            assert stream_options() == {"include_partial_messages": True}
+        finally:
+            bridge_mod.activate(None)
+
+    def test_engine_forwards_text_deltas(self, tmp_path):
+        from claude_agent_sdk.types import StreamEvent
+
+        from reverse_api.engineer import ClaudeEngineer
+
+        har = tmp_path / "x.har"
+        har.touch()
+        with (
+            patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path / "scripts"),
+            patch("reverse_api.base_engineer.MessageStore"),
+        ):
+            eng = ClaudeEngineer(run_id="r1", har_path=har, prompt="p", output_dir=str(tmp_path))
+        seen: list[str] = []
+        eng.ui.stream_text = seen.append  # type: ignore[attr-defined]
+
+        def delta(kind: str, **fields: str) -> StreamEvent:
+            return StreamEvent(uuid="u", session_id="s", event={"type": "content_block_delta", "delta": {"type": kind, **fields}})
+
+        class Client:
+            async def receive_response(self):
+                yield delta("text_delta", text="Hel")
+                yield delta("text_delta", text="lo")
+                yield delta("input_json_delta", partial_json="{")
+
+        asyncio.run(eng._process_streaming_response(Client()))
+        assert seen == ["Hel", "lo"]
 
 
 def test_card_path_is_a_link(session, tmp_path):

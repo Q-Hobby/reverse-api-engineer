@@ -260,11 +260,18 @@ class LedgerUI:
             self.view.plan(todos)
             self._changed()
 
+    def stream_text(self, delta: str) -> None:
+        """A text delta from the SDK, shown as it arrives."""
+        if delta:
+            self.b.flush_card()
+            self.view.stream(delta)
+            self._changed()
+
     def thinking(self, text: str, max_length: int = 500) -> None:
         _ = max_length
         if text and text.strip():
             self.b.flush_card()
-            self.view.message(text.strip())
+            self.view.stream_done(text.strip())
             self._changed()
 
     def thinking_block(self, text: str, max_chars: int = 8000) -> None:
@@ -314,12 +321,18 @@ class CursorLedgerUI(LedgerUI):
         _ = max_length
         if text:
             self._eng._cursor_feed_thinking(text)
+            self.stream_text(text)
 
     def thinking_block(self, text: str, max_chars: int = 8000) -> None:
         LedgerUI.thinking(self, text[:max_chars])
 
 
 _bridge: Bridge | None = None
+
+
+def stream_options() -> dict[str, Any]:
+    """ClaudeAgentOptions kwargs: partial messages only for the session, which shows text as it streams."""
+    return {"include_partial_messages": True} if _bridge is not None else {}
 
 
 def active() -> Bridge | None:

@@ -39,6 +39,7 @@ class Transcript:
         self._lock = threading.RLock()
         self._width = 0
         self._lines: list[Line] = []
+        self._live: RenderableType | None = None  # a message still being revealed
 
     def add(self, inline: RenderableType | Raw, full: RenderableType | Raw | None = None) -> int:
         """Append an item; returns how many lines it added at the current width."""
@@ -61,12 +62,16 @@ class Transcript:
             self.full.clear()
             self._lines.clear()
 
+    def set_live(self, renderable: RenderableType | None) -> None:
+        with self._lock:
+            self._live = renderable
+
     def lines(self) -> list[Line]:
         with self._lock:
             if self._width != width():
                 self._width = width()
                 self._lines = [line for item in self.items for line in self._render(item)]
-            return list(self._lines)
+            return self._lines + (self._render(self._live) if self._live is not None else [])
 
     def _render(self, item: RenderableType | Raw) -> list[Line]:
         if isinstance(item, Raw):
