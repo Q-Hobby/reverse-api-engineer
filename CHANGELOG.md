@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Raise security minimums to aiohttp >=3.14.4, certifi >=2026.10.19, multidict >=6.9.1, OpenTelemetry API >=1.45.1, PyJWT >=2.15.0 and urllib3 >=2.8.0, and lock the patched versions. certifi drops the emSign root CAs whose intermediate keys were compromised.
+- Upgrade the Cursor bridge to `@cursor/sdk` 1.0.40 with Zod 4.6.7, fixing a Zod memory-exhaustion issue and removing the vulnerable undici dependency.
+- Upgrade the website to Next.js 16.4.3 to fix remote code execution, server-side request forgery, cache poisoning and denial-of-service vulnerabilities, and refresh Sharp, brace-expansion, source-map-js, undici and Zod to patched versions.
+
 ## [0.14.0] - 2026-09-23
 
 ### Security
