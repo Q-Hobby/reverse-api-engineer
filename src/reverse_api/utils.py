@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import uuid
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -97,6 +98,12 @@ def build_sdk_settings() -> dict[str, Any]:
         sources = None
     if isinstance(sources, list) and sources and all(s in _CLAUDE_SETTING_SOURCES for s in sources):
         return {"setting_sources": list(sources)}
+    if sources not in (None, []):
+        warnings.warn(
+            f"claude_setting_sources must list some of {list(_CLAUDE_SETTING_SOURCES)}, got {sources!r}; "
+            "the Claude session stays isolated",
+            stacklevel=2,
+        )
     return {"setting_sources": [], "strict_mcp_config": True}
 
 

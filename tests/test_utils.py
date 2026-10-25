@@ -891,9 +891,15 @@ class TestBuildSdkSettings:
         settings = self._settings(tmp_path, {"claude_setting_sources": ["user", "project", "local"]})
         assert settings == {"setting_sources": ["user", "project", "local"]}
 
-    @pytest.mark.parametrize("value", [[], None, "user", ["all"], ["user", 1]])
-    def test_invalid_values_stay_isolated(self, tmp_path, value):
+    @pytest.mark.parametrize("value", [[], None])
+    def test_empty_values_stay_isolated_quietly(self, tmp_path, value, recwarn):
         assert self._settings(tmp_path, {"claude_setting_sources": value}) == self.ISOLATED
+        assert len(recwarn) == 0
+
+    @pytest.mark.parametrize("value", ["user", ["all"], ["User"], ["user", 1]])
+    def test_invalid_values_warn_and_stay_isolated(self, tmp_path, value):
+        with pytest.warns(UserWarning, match="claude_setting_sources"):
+            assert self._settings(tmp_path, {"claude_setting_sources": value}) == self.ISOLATED
 
     @pytest.mark.asyncio
     async def test_folder_name_session_is_isolated(self, tmp_path):
