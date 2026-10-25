@@ -257,7 +257,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 env=build_sdk_env(),
             **build_sdk_settings(),
             **build_sdk_effort(),
-            **stream_options(),
+            **stream_options(self.model),
                 stderr=self._handle_cli_stderr,
             )
         else:
@@ -272,7 +272,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 env=build_sdk_env(),
             **build_sdk_settings(),
             **build_sdk_effort(),
-            **stream_options(),
+            **stream_options(self.model),
                 stderr=self._handle_cli_stderr,
             )
 

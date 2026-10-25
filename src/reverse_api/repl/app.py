@@ -1,8 +1,8 @@
 """The full-screen interactive session: header, conversation, input bar fixed to the bottom.
 
 Agent and engineer runs on the Claude, Copilot and Cursor SDKs stream into the conversation
-through the bridge. Modes not ported yet (manual, collector, OpenCode) suspend the app and run
-in the classic interface, then hand back.
+through the bridge. Modes not ported yet (manual, collector, OpenCode) and /settings leave full
+screen, run in the classic interface on the main thread, then hand back.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import time
 import warnings
 from collections.abc import Callable
 from concurrent.futures import Future
+from pathlib import Path
 from typing import IO, Any, cast
 from urllib.parse import unquote, urlparse
 
@@ -39,10 +40,11 @@ from prompt_toolkit.styles import Style
 from rich.console import Console, RenderableType
 from rich.text import Text
 
-from .bridge import Bridge, activate
+from ..messages import MessageStore
+from .bridge import Bridge, activate, describe, first_line, short_name
 from .style import DIM, INK, SKY, THEME, height, width
 from .transcript import Raw, Transcript, TranscriptControl, TranscriptWriter
-from .view import EFFORTS, LedgerView, Picker, SessionState, model_label
+from .view import EFFORTS, LedgerView, Picker, SessionState, model_label, run_summary, strip_markdown
 
 MODES = {
     "agent": "the agent browses the site and writes the client",
@@ -63,14 +65,17 @@ COMMANDS = {
     "/effort": "how hard the agent thinks",
     "/mode": "choose the mode",
     "/settings": "all settings",
-    "/history": "past runs",
-    "/messages": "messages of a past run: /messages <run id>",
+    "/history": "past runs, to look at or re-engineer",
+    "/messages": "what the agent did in a past run",
     "/output": "everything from this session, unfolded",
     "/open": "open the latest client",
-    "/clear": "clear the conversation",
+    "/clear": "clear the conversation and start over",
     "/help": "keys and commands",
     "/exit": "quit rae",
 }
+HISTORY_RUNS = 20
+# Commands that open a picker are echoed once a choice shows something, not when the picker opens.
+PICKER_COMMANDS = {"/model", "/effort", "/mode", "/history", "/messages"}
 URL_IN_PROMPT = re.compile(r"https?://([^/\s]+)|\b((?:[\w-]+\.)+(?:com|io|co|ch|de|fr|uk|org|net|dev|ai|app|so|sh|eu|jobs))\b")
 
 
@@ -124,6 +129,7 @@ class Session:
         self.app: Application | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.real_out, self.real_err = sys.stdout, sys.stderr
+        self.classic_job: Callable[[], None] | None = None
         # Stray prints read as notices: dim and indented like the rest of the ledger.
         self.capture = TranscriptWriter(self._captured, plain_style=f"fg:{DIM}", indent="   ")
 
@@ -139,7 +145,10 @@ class Session:
 
     def call_soon(self, fn: Callable[[], None]) -> None:
         if self.loop is not None:
-            self.loop.call_soon_threadsafe(fn)
+            try:
+                self.loop.call_soon_threadsafe(fn)
+            except RuntimeError:
+                pass  # between two stretches of full screen the loop is closed; nothing to redraw
 
     def ask_user(self, spec: dict[str, Any]) -> Future:
         """Show an agent question in the bar; the future resolves with the answer, or an empty string if skipped."""
@@ -168,7 +177,7 @@ class Session:
 
     def palette_items(self) -> list[tuple[str, str]]:
         typed = self.buf.text.strip().lower()
-        return [(c, d) for c, d in COMMANDS.items() if c.startswith(typed)]
+        return sorted(((c, d) for c, d in COMMANDS.items() if c.startswith(typed)), key=lambda item: item[0] != typed)
 
     def open_picker(self, title: str, items: list[tuple[str, str, str]], current: str | None, on_pick: Callable[[str | None], None]) -> None:
         index = next((i for i, (v, _, _) in enumerate(items) if v == current), 0)
@@ -205,6 +214,8 @@ class Session:
         cmd, _, arg = text.partition(" ")
         cmd, arg = cmd.lower(), arg.strip()
         st, view = self.st, self.view
+        if cmd not in PICKER_COMMANDS | {"/exit", "/clear"}:
+            view.command(cmd, arg)
         if cmd == "/exit":
             self.quit()
         elif cmd == "/new":
@@ -212,11 +223,14 @@ class Session:
                 self.bridge.follow_ups.put(None)
             elif st.running:
                 view.notice("a run is in progress · esc stops it")
+            else:
+                view.notice("ready · describe the API you want")
         elif cmd == "/help":
             view.notice("enter sends · esc stops a run · shift+tab mode · ctrl+e effort · ctrl+o full output · ctrl+d quits")
             view.notice("pageup/pagedown or the mouse wheel scroll · end jumps to the latest · click a file or URL to open it")
         elif cmd == "/model":
             if st.sdk != "claude":
+                view.command(cmd)
                 view.notice(f"the {st.sdk} model is set in /settings")
             else:
                 from ..tui import get_model_choices
@@ -235,18 +249,25 @@ class Session:
             else:
                 view.notice("no client yet")
         elif cmd == "/clear":
-            self.transcript.clear()
-            st.scroll = 0
-            st.folded = False
+            if st.running:
+                view.notice("a run is in progress · esc stops it")
+            else:
+                if st.waiting:
+                    self.bridge.follow_ups.put(None)
+                view.flush_live()
+                self.transcript.clear()
+                st.scroll, st.folded, st.cost, st.tokens, st.step = 0, False, 0.0, 0, 0
+                st.last_client, st.client_name, st.host = None, "", ""
+                self.bridge.cost_base = 0.0
         elif cmd == "/settings":
-            self.classic(lambda: self.cli.handle_settings(), then=self.reload_settings)
+            self.classic(lambda: self.cli.handle_settings(), then=self.reload_settings, pause=False)
         elif cmd == "/history":
-            self.classic(lambda: self.cli.handle_history())
+            self.pick_run(cmd, "past runs", self.show_run)
         elif cmd == "/messages":
             if arg:
-                self.classic(lambda: self.cli.handle_messages(arg))
+                self.show_messages(arg)
             else:
-                view.notice("usage: /messages <run id>")
+                self.pick_run(cmd, "whose messages", self.show_messages)
         else:
             view.notice(f"unknown command {cmd} · / lists them")
         self.invalidate()
@@ -257,6 +278,74 @@ class Session:
         self.st.sdk = cfg.get("sdk", "claude")
         self.st.model = self.cli.default_model_for_configured_sdk(self.st.sdk)
         self.st.effort = cfg.get("claude_effort")
+
+    # past runs
+
+    def pick_run(self, cmd: str, title: str, then: Callable[[str], None]) -> None:
+        runs = self.cli.session_manager.get_history(limit=HISTORY_RUNS)
+        if not runs:
+            self.view.command(cmd)
+            self.view.notice("no runs yet")
+            return
+        items = [(r["run_id"], r["run_id"], run_summary(r)) for r in runs]
+        self.open_picker(title, items, None, lambda value: then(value) if value else None)
+
+    def show_run(self, run_id: str) -> None:
+        run = self.cli.session_manager.get_run(run_id)
+        self.view.command("/history", run_id)
+        if run is None:
+            self.view.notice(f"no run {run_id}")
+            return
+        self.view.run_details(run)
+        actions = [
+            ("engineer", "re-engineer", "write its client again from the capture"),
+            ("messages", "messages", "what the agent did, step by step"),
+            ("", "back", ""),
+        ]
+
+        def act(value: str | None) -> None:
+            if value == "engineer":
+                self.reengineer(run_id)
+            elif value == "messages":
+                self.show_messages(run_id)
+
+        self.open_picker(f"run {run_id}", actions, None, act)
+        self.invalidate()
+
+    def show_messages(self, run_id: str) -> None:
+        self.view.command("/messages", run_id)
+        entries: list[tuple[str, str, str, str]] = []  # clock, verb, text, kind
+        for msg in MessageStore(run_id).load():
+            kind, content, clock = msg.get("type"), msg.get("content"), str(msg.get("timestamp", ""))[11:19]
+            if kind == "prompt":
+                # The first prompt of a run is the engine's full brief; the user's words are its mission.
+                mission = re.search(r"<mission>(.*?)</mission>", str(content), re.DOTALL)
+                entries.append((clock, "prompt", first_line(mission.group(1) if mission else content, 200), "user"))
+            elif kind == "tool_start" and isinstance(content, dict):
+                found = describe(short_name(str(content.get("name", ""))), content.get("input") or {})
+                if found:
+                    entries.append((clock, found[0], found[1], found[2]))
+            elif kind == "tool_result" and isinstance(content, dict) and content.get("is_error"):
+                entries.append((clock, "failed", first_line(content.get("output") or "the tool returned an error", 200), "error"))
+            elif kind == "thinking":
+                entries.append((clock, "says", first_line(strip_markdown(str(content)), 200), "say"))
+            elif kind == "error":
+                entries.append((clock, "error", first_line(content, 200), "error"))
+            elif kind == "result":
+                script = content.get("script_path") if isinstance(content, dict) else None
+                entries.append((clock, "done", Path(script).name if script else "finished", "done"))
+        if not entries:
+            self.view.notice(f"no messages for run {run_id}")
+        else:
+            self.view.message_log(entries)
+        self.invalidate()
+
+    def reengineer(self, run_id: str) -> None:
+        if self.st.running or self.st.waiting:
+            self.view.notice("a run is open · /new ends it first")
+            return
+        self.view.command("re-engineer", run_id)
+        self.start(run_id, mode="engineer", echo=False)
 
     # runs
 
@@ -282,20 +371,24 @@ class Session:
             self.start(text)
         self.invalidate()
 
-    def start(self, prompt: str) -> None:
+    def start(self, prompt: str, mode: str | None = None, echo: bool = True) -> None:
         st, cli = self.st, self.cli
+        mode = mode or st.mode
         st.host, st.client_name = host_in(prompt), ""
-        st.started, st.running, st.verb, st.kind = time.time(), True, "starting", "other"
-        self.view.user(prompt)
+        if echo:
+            self.view.user(prompt)
         model = st.model if st.sdk == "claude" else None
-        if st.mode == "manual":
+        classic = mode in ("manual", "collector") or st.sdk == "opencode"
+        if not classic:
+            st.started, st.running, st.verb, st.kind = time.time(), True, "starting", "other"
+        if mode == "manual":
             self.classic(lambda: cli.run_manual_capture(prompt=prompt, url=None, reverse_engineer=True, model=model))
-        elif st.mode == "collector":
+        elif mode == "collector":
             self.classic(lambda: cli.run_collector(prompt=prompt, model=None))
         elif st.sdk == "opencode":
-            run = (lambda: self.engineer(prompt, model)) if st.mode == "engineer" else (lambda: cli.run_agent_capture(prompt=prompt, model=model))
+            run = (lambda: self.engineer(prompt, model)) if mode == "engineer" else (lambda: cli.run_agent_capture(prompt=prompt, model=model))
             self.classic(run)
-        elif st.mode == "engineer":
+        elif mode == "engineer":
             self.work(lambda: self.engineer(prompt, model))
         else:
             self.work(lambda: cli.run_agent_capture(prompt=prompt, model=model))
@@ -343,22 +436,33 @@ class Session:
             self.call_soon(lambda: self.start(nxt))
         self.invalidate()
 
-    def classic(self, fn: Callable[[], Any], then: Callable[[], None] | None = None) -> None:
-        """Suspend the app and run fn in the plain terminal, for flows the full-screen view does not cover yet."""
+    def classic(self, fn: Callable[[], Any], then: Callable[[], None] | None = None, pause: bool = True) -> None:
+        """Leave full screen and run fn in the plain terminal on the main thread, then come back.
 
-        def call() -> None:
-            sys.stdout, sys.stderr = self.real_out, self.real_err
+        The classic screens prompt with questionary, which runs its own event loop, and manual
+        capture installs signal handlers; both need the main thread with no loop running.
+        ``pause`` keeps what fn printed on screen until the user is done reading it.
+        """
+        if self.st.running:
+            self.view.notice("a run is in progress · esc stops it")
+            return
+
+        def job() -> None:
             try:
                 fn()
-            except (KeyboardInterrupt, click.Abort):
+                if pause:
+                    self.cli.console.print("\n [dim]enter returns to the session[/dim]", end="")
+                    input()
+            except (KeyboardInterrupt, EOFError, click.Abort):
                 pass
-            finally:
-                sys.stdout = sys.stderr = cast(IO[str], self.capture)
-                self.st.running = False
-                if then:
-                    then()
+            except Exception as exc:  # noqa: BLE001  # a failing classic screen must not end the session
+                self.view.error(str(exc) or type(exc).__name__)
+            if then:
+                then()
 
-        asyncio.ensure_future(run_in_terminal(call))
+        self.classic_job = job
+        if self.app is not None:
+            self.app.exit()
 
     def stop(self) -> None:
         st = self.st
@@ -379,13 +483,18 @@ class Session:
                 console.print(Text.from_ansi(item.text) if isinstance(item, Raw) else item)
             sys.stdout = self.real_out
             try:
-                click.echo_via_pager(buf.getvalue(), color=True)
+                click.echo_via_pager(buf.getvalue())  # click turns on less -R itself unless LESS says otherwise
             finally:
                 sys.stdout = cast(IO[str], self.capture)
 
         asyncio.ensure_future(run_in_terminal(page))
 
+    def take_classic_job(self) -> Callable[[], None] | None:
+        job, self.classic_job = self.classic_job, None
+        return job
+
     def quit(self) -> None:
+        self.classic_job = None
         if self.st.running:
             self.bridge.cancel()
         if self.st.waiting:
@@ -416,13 +525,14 @@ class Session:
         def palette_view() -> FormattedText:
             items = self.palette_items()
             st.palette_index = min(st.palette_index, max(0, len(items) - 1))
-            return view.menu([(c, d, i == st.palette_index, False) for i, (c, d) in enumerate(items)])
+            return view.menu([(c, d, i == st.palette_index, False) for i, (c, d) in enumerate(items)], limit=len(COMMANDS))
 
         def picker_view() -> FormattedText:
             p = st.picker
             if p is None:
                 return FormattedText([])
-            return view.menu([(label, desc, i == p.index, value == p.current) for i, (value, label, desc) in enumerate(p.items)], title=p.title)
+            rows = [(label, desc, i == p.index, value == p.current) for i, (value, label, desc) in enumerate(p.items)]
+            return view.menu(rows, title=p.title)
 
         transcript_window: Window = Window(wrap_lines=False)
         transcript_window.content = TranscriptControl(lambda: self.transcript_view(transcript_window), self.scroll)
@@ -594,7 +704,6 @@ class Session:
         finally:
             sys.stdout, sys.stderr = self.real_out, self.real_err
             activate(None)
-        self.print_transcript()
 
     def print_transcript(self) -> None:
         """Leave the session in the terminal's history, like a normal command's output."""
@@ -608,8 +717,15 @@ class Session:
 
 
 def run_session() -> None:
-    """Entry point for the interactive CLI."""
+    """Entry point for the interactive CLI: full screen, with stretches in the plain terminal for classic screens."""
+    session = Session()
     try:
-        asyncio.run(Session().run())
+        while True:
+            asyncio.run(session.run())
+            job = session.take_classic_job()
+            if job is None:
+                break
+            job()
     except KeyboardInterrupt:
         pass
+    session.print_transcript()

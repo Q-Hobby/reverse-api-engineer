@@ -53,6 +53,9 @@ VERB_COL = 9
 INDENT = 6 + VERB_COL
 CODE_PREVIEW = 8
 OUTPUT_PREVIEW = 3
+NOTE_LINES = 3
+LOG_PREVIEW = 24
+MENU_ROWS = 10
 TOP_PADDING = 1
 FLAP = "abcdefghijklmnopqrstuvwxyz"
 KIND_TINT = {"read": PASTEL_READ, "write": PASTEL_WRITE, "run": PASTEL_RUN, "other": PASTEL_OTHER}
@@ -122,9 +125,38 @@ class AgentMarkdown(Markdown):
         self.parsed = MarkdownIt().enable("strikethrough").enable("table").disable(["html_inline", "html_block"]).parse(markup)
 
 
+# Flag emoji are pairs of regional indicators; terminals draw them wider than they are counted,
+# which leaves stray characters behind on redraw. Variation selectors, joiners and skin tones
+# cause the same drift, so text gets their plain form.
+_DRIFT = re.compile("[\U0001f1e6-\U0001f1ff]{2}\\s?|[\ufe0f\u200d\U0001f3fb-\U0001f3ff]")
+
+
+def terminal_safe(text: str) -> str:
+    return _DRIFT.sub("", text)
+
+
+def strip_markdown(text: str) -> str:
+    """Thinking summaries come as light Markdown; a margin note shows them as plain text."""
+    return re.sub(r"(\*\*|__|`|^#+\s+|^\s*[-*]\s+(?=\S))", "", text, flags=re.MULTILINE)
+
+
+def first_words(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def escape_partial(text: str) -> str:
     """Half-streamed Markdown, kept from opening a code block that has not closed yet."""
     return text + "\n```" if text.count("```") % 2 else text
+
+
+def run_summary(run: dict[str, Any]) -> str:
+    """One line for a past run in a picker: when, what was asked, what it cost."""
+    when = str(run.get("timestamp", ""))[5:16].replace("T", " ")
+    prompt = " ".join(str(run.get("prompt") or "").split())
+    prompt = prompt if len(prompt) <= 44 else prompt[:43] + "…"
+    cost = (run.get("usage") or {}).get("estimated_cost_usd") or 0
+    return f"{when}  {prompt:<44}  " + (f"${cost:.2f}" if cost else "")
 
 
 def link(text: str, target: Path | str) -> str:
@@ -227,27 +259,43 @@ class LedgerView:
         grid = Table.grid(padding=(0, 1))
         grid.add_column(width=2, justify="right")
         grid.add_column(max_width=min(96, width() - 4))
-        grid.add_row(f"[{self.st.accent}]¶[/]", AgentMarkdown(text, code_theme=CODE_THEME))
+        grid.add_row(f"[{self.st.accent}]¶[/]", AgentMarkdown(terminal_safe(text), code_theme=CODE_THEME))
         return grid
 
-    def stream(self, delta: str) -> None:
-        """A piece of the agent's text as it is generated."""
+    def _note_grid(self, text: str, live: bool = False, full: bool = False) -> Table:
+        """The model's reasoning in the margin: dim italic, the end shown while it streams, the start once done."""
+        lines = [line for line in strip_markdown(terminal_safe(text)).splitlines() if line.strip()] or [""]
+        shown = lines if full else lines[-NOTE_LINES:] if live else lines[:NOTE_LINES]
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(width=5, justify="right")
+        grid.add_column(max_width=min(92, width() - 8))
+        body = Text("\n".join(shown), style=f"italic {DIM}")
+        if len(shown) < len(lines) and not live:
+            self.st.folded = True
+            body.append(f"\n+{len(lines) - len(shown)} lines · ctrl+o full output", style=DIM)
+        grid.add_row(Text("┊", style=HAIRLINE), body)
+        return grid
+
+    def stream(self, delta: str, kind: str = "message") -> None:
+        """A piece of the agent's text, or of its reasoning (kind "note"), as it is generated."""
         with self._lock:
-            if self._live is not None and self._live["closing"]:
+            if self._live is not None and (self._live["closing"] or self._live["kind"] != kind):
                 self._finalize()
             if self._live is None:
                 self.gap()
-                self._live = {"target": "", "shown": 0, "closing": False}
+                self._live = {"target": "", "shown": 0, "closing": False, "kind": kind}
             self._live["target"] += delta
 
-    def stream_done(self, final: str | None = None) -> None:
+    def stream_done(self, final: str | None = None, kind: str = "message") -> None:
         """The text is complete; ``final`` replaces what streamed, or starts a reveal when nothing did."""
         with self._lock:
+            if self._live is not None and self._live["kind"] != kind:
+                self._finalize()
             if self._live is None:
                 if not final or not final.strip():
                     return
                 self.gap()
-                self._live = {"target": "", "shown": 0, "closing": False}
+                self._live = {"target": "", "shown": 0, "closing": False, "kind": kind}
             if final and final.strip():
                 self._live["target"] = final
             self._live["closing"] = True
@@ -268,7 +316,11 @@ class LedgerView:
             if live["closing"] and live["shown"] >= len(target):
                 self._finalize()
                 return
-            self.t.set_live(Group(self._message_grid(escape_partial(target[: live["shown"]]) + " ▍")))
+            partial = target[: live["shown"]]
+            if live["kind"] == "note":
+                self.t.set_live(self._note_grid(partial, live=True))
+            else:
+                self.t.set_live(Group(self._message_grid(escape_partial(partial) + " ▍")))
 
     def flush_live(self) -> None:
         """Settle the live message at once, with everything that waited behind it."""
@@ -281,7 +333,8 @@ class LedgerView:
         self.t.set_live(None)
         text = (live or {}).get("target", "").strip()
         if text:
-            self._emit(self._message_grid(text))
+            note = (live or {}).get("kind") == "note"
+            self._emit(*((self._note_grid(text), self._note_grid(text, full=True)) if note else (self._message_grid(text),)))
             self._emit("")
         pending, self._pending = self._pending, []
         for inline, full in pending:
@@ -330,7 +383,13 @@ class LedgerView:
 
     def user(self, text: str) -> None:
         self.gap()
-        self.out(f" [bold {self.st.accent}]›[/] [{INK}]{escape(text)}[/]")
+        self.out(f" [bold {self.st.accent}]›[/] [{INK}]{escape(terminal_safe(text))}[/]")
+        self.out("")
+
+    def command(self, cmd: str, arg: str = "") -> None:
+        """A slash command, kept in the conversation so it reads why something appeared."""
+        self.gap()
+        self.out(f" [{DIM}]›[/] [{self.st.accent}]{escape(cmd)}[/]" + (f" [{INK_SOFT}]{escape(arg)}[/]" if arg else ""))
 
     def run_line(self, run_id: str, mode: str | None) -> None:
         self.out(f"   [{DIM}]run {escape(run_id)} · {escape(mode or self.st.mode)}[/]")
@@ -353,6 +412,7 @@ class LedgerView:
         def block(rows: list[str], more: int) -> Group:
             texts = []
             for i, line in enumerate(rows):
+                line = terminal_safe(line)
                 body = Text(line if len(line) <= room else line[: room - 1] + "…", style=PINK if error else DIM)
                 RECEIPT_HL.highlight(body)
                 texts.append(Text.assemble(" " * INDENT, ("└ " if i == 0 else "  ", HAIRLINE), body))
@@ -440,6 +500,39 @@ class LedgerView:
         self.out("\n".join(lines))
         self.out("")
         st.last_client = path
+
+    def run_details(self, run: dict[str, Any]) -> None:
+        """A past run picked in /history: when and how it ran, what it cost, where its client is."""
+        usage = run.get("usage") or {}
+        cost = usage.get("estimated_cost_usd") or 0
+        tokens = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
+        when = str(run.get("timestamp", ""))[:16].replace("T", " ")
+        facts = " · ".join(x for x in (when, model_label(run.get("model")) if run.get("model") else "", run.get("mode") or "") if x)
+        spend = " · ".join(x for x in (f"${cost:.2f}" if cost else "", f"{k(tokens)} tokens" if tokens else "") if x)
+        script = (run.get("paths") or {}).get("script_path")
+        lines = [f" [{self.st.accent}]*[/] [bold {INK}]{escape(str(run.get('run_id', '')))}[/]  [{DIM}]{escape(facts)}[/]"]
+        lines.append(f"   [{HAIRLINE}]└[/] [{INK_SOFT}]{escape(first_words(str(run.get('prompt') or ''), 200))}[/]")
+        if spend or script:
+            client = link(Path(script).name, Path(script)) if script and Path(script).exists() else "no client"
+            lines.append(f"     [{DIM}]{escape(spend) + ' · ' if spend else ''}[/][{INK_SOFT}]{client}[/]")
+        self.out("\n".join(lines))
+
+    def message_log(self, entries: list[tuple[str, str, str, str]]) -> None:
+        """A past run's log from /messages: (clock, verb, text, kind) rows in the ledger's colors."""
+        room = max(20, width() - VERB_COL - 16)
+        colors = {"user": self.st.accent, "say": DIM, "error": PINK, "done": MINT}
+        rows = []
+        for clock, verb, text, kind in entries:
+            tint = colors.get(kind) or KIND_TINT.get(kind, PASTEL_OTHER)
+            body = terminal_safe(text)
+            body = body if len(body) <= room else body[: room - 1] + "…"
+            style = f"italic {DIM}" if kind == "say" else PINK if kind == "error" else INK_SOFT
+            rows.append(Text.assemble(f"   {clock:<8}  ", (f"{verb:<{VERB_COL}} ", f"bold {tint}"), (body, style), style=DIM))
+        shown = rows[:LOG_PREVIEW]
+        if len(rows) > len(shown):
+            self.st.folded = True
+            shown.append(Text.assemble(" " * 13, (f"+{len(rows) - len(shown)} lines · ctrl+o full output", DIM)))
+        self.out(Group(*shown), Group(*rows))
 
     def event(self, key: str, old: str, new: str) -> None:
         """A settings change, set apart from the conversation: ◇ model  sonnet 5.5 → opus 5.5."""
@@ -533,13 +626,17 @@ class LedgerView:
         used = sum(len(t) for _, t in left) + sum(len(t) for _, t in hint)
         return FormattedText(left + [("", " " * max(1, width() - used))] + hint)
 
-    def menu(self, rows: list[tuple[str, str, bool, bool]], title: str | None = None) -> FormattedText:
+    def menu(self, rows: list[tuple[str, str, bool, bool]], title: str | None = None, limit: int = MENU_ROWS) -> FormattedText:
         """A list under the input: (label, description, selected, current)."""
         st = self.st
         out: list[tuple[str, str]] = []
         if title:
             out += [(f"fg:{DIM} italic", f"   {title}")]
         label_w = max((len(r[0]) for r in rows), default=0) + 3
+        selected_at = next((i for i, r in enumerate(rows) if r[2]), 0)
+        start = max(0, min(selected_at - limit // 2, len(rows) - limit))
+        hidden = max(0, len(rows) - limit)
+        rows = rows[start : start + limit]
         for label, desc, selected, current in rows:
             if out:
                 out += [("", "\n")]
@@ -550,4 +647,6 @@ class LedgerView:
             out += [(f"fg:{st.accent}", "  ●" if current else "")]
         if not rows:
             out += [(f"fg:{DIM}", "   no matching command")]
+        if hidden:
+            out += [("", "\n"), (f"fg:{DIM}", f"   {hidden} more · ↑↓")]
         return FormattedText(out)

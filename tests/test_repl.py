@@ -4,14 +4,14 @@ import asyncio
 import threading
 from concurrent.futures import Future
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from reverse_api.repl import bridge as bridge_mod
 from reverse_api.repl.bridge import Bridge, LedgerUI, describe, short_name
 from reverse_api.repl.transcript import Raw, Transcript, TranscriptWriter, raw_lines
-from reverse_api.repl.view import LedgerView, SessionState, default_effort, first_definition, model_label
+from reverse_api.repl.view import LedgerView, SessionState, default_effort, first_definition, model_label, terminal_safe
 
 
 def plain(transcript: Transcript) -> str:
@@ -25,6 +25,27 @@ def session():
     view = LedgerView(st, t)
     b = Bridge(view, invalidate=lambda: None, ask_user=lambda spec: Future())
     return st, t, view, b
+
+
+@pytest.fixture
+def app_session(monkeypatch):
+    """A Session on a fake config and history, so commands run without touching ~/.reverse-api."""
+    from reverse_api import cli
+    from reverse_api.repl.app import Session
+
+    config = MagicMock()
+    config.get.side_effect = lambda key, default=None: default
+    history = MagicMock()
+    monkeypatch.setattr(cli, "config_manager", config)
+    monkeypatch.setattr(cli, "session_manager", history)
+    monkeypatch.setattr(cli, "default_model_for_configured_sdk", lambda sdk: "claude-sonnet-5-5")
+    return Session(), history
+
+
+def pick(st: SessionState, value: str | None) -> None:
+    p, st.picker = st.picker, None
+    assert p is not None
+    p.on_pick(value)
 
 
 class TestDescribe:
@@ -73,12 +94,28 @@ class TestLedgerUI:
         ui.header("abc123", "prompt", model="claude-sonnet-5-5")
         client = tmp_path / "api_client.py"
         client.write_text("a\nb\nc\n", encoding="utf-8")
+        ui.tool_start("mcp__verification__report_client_verified", {"summary": "listed 12 jobs"})
         ui.success(str(client))
         assert "ready" not in plain(t)
         ui.usage({"input_tokens": 1000, "output_tokens": 200, "estimated_cost_usd": 0.12})
         text = plain(t)
         assert "api_client.py ready" in text and "1.2k tokens · $0.12" in text and "sonnet 5.5" in text
         assert st.cost == pytest.approx(0.12)
+
+    def test_no_card_until_the_agent_verified_the_client(self, session, tmp_path):
+        _st, t, _view, b = session
+        ui = LedgerUI(b)
+        ui.header("abc123", "prompt", model="claude-sonnet-5-5")
+        client = tmp_path / "api_client.py"
+        client.write_text("print('hi')\n", encoding="utf-8")
+        ui.success(str(client))
+        ui.usage({"input_tokens": 10, "output_tokens": 5, "estimated_cost_usd": 0.01})
+        assert "ready" not in plain(t)
+        ui.header("def456", "prompt", model="claude-sonnet-5-5")
+        ui.tool_start("mcp__verification__report_client_verified", {"summary": "ok"})
+        ui.success(str(tmp_path / "never_written.py"))
+        ui.usage({"input_tokens": 10, "output_tokens": 5, "estimated_cost_usd": 0.01})
+        assert "ready" not in plain(t), "a client path that does not exist gets no card"
 
     def test_folded_output_offers_ctrl_o(self, session):
         st, _t, view, b = session
@@ -252,16 +289,40 @@ class TestSmoothStreaming:
         text = plain(t)
         assert text.index("test the script") < text.index("01  run")
 
-    def test_partial_messages_only_for_the_session(self, session):
+    def test_partial_messages_and_thinking_only_for_the_session(self, session):
         from reverse_api.repl.bridge import stream_options
 
         _st, _t, _view, b = session
-        assert stream_options() == {}
+        assert stream_options("claude-sonnet-5-5") == {}
         bridge_mod.activate(b)
         try:
-            assert stream_options() == {"include_partial_messages": True}
+            summarized = {"type": "adaptive", "display": "summarized"}
+            assert stream_options("claude-sonnet-5-5") == {"include_partial_messages": True, "thinking": summarized}
+            assert stream_options("claude-haiku-4-5") == {"include_partial_messages": True}
+            assert stream_options("claude-sonnet-4-5") == {"include_partial_messages": True}
+            assert stream_options("claude-opus-4-6")["thinking"] == summarized
+            assert stream_options("sonnet") == {"include_partial_messages": True}
         finally:
             bridge_mod.activate(None)
+
+    def test_thinking_streams_in_the_margin_then_settles_folded(self, session):
+        st, t, view, b = session
+        ui = LedgerUI(b)
+        note = "**Planning the capture**\n\nFirst open the board.\nThen watch the requests.\nThen find the jobs endpoint.\nLast, write the client."
+        for piece in note.split(" "):
+            ui.stream_thinking(piece + " ")
+        for _ in range(200):
+            view.tick()
+        live = plain(t)
+        assert "┊" in live and "Planning the capture" not in live, "while streaming the note shows its latest lines"
+        assert st.verb == "thinking"
+        ui.thinking_note(note)
+        ui.stream_text("Opening the board now.")
+        view.flush_live()
+        text = plain(t)
+        assert "Planning the capture" in text and "**" not in text and "+2 lines" in text
+        assert text.index("Planning the capture") < text.index("Opening the board now.")
+        assert st.folded
 
     def test_engine_forwards_text_deltas(self, tmp_path):
         from claude_agent_sdk.types import StreamEvent
@@ -289,6 +350,177 @@ class TestSmoothStreaming:
 
         asyncio.run(eng._process_streaming_response(Client()))
         assert seen == ["Hel", "lo"]
+
+    def test_engine_forwards_thinking(self, tmp_path):
+        from claude_agent_sdk import AssistantMessage, ThinkingBlock
+        from claude_agent_sdk.types import StreamEvent
+
+        from reverse_api.engineer import ClaudeEngineer
+
+        har = tmp_path / "x.har"
+        har.touch()
+        with (
+            patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path / "scripts"),
+            patch("reverse_api.base_engineer.MessageStore"),
+        ):
+            eng = ClaudeEngineer(run_id="r1", har_path=har, prompt="p", output_dir=str(tmp_path))
+        deltas: list[str] = []
+        notes: list[str] = []
+        eng.ui.stream_thinking = deltas.append  # type: ignore[attr-defined]
+        eng.ui.thinking_note = notes.append  # type: ignore[attr-defined]
+
+        class Client:
+            async def receive_response(self):
+                delta = {"type": "thinking_delta", "thinking": "Plan"}
+                yield StreamEvent(uuid="u", session_id="s", event={"type": "content_block_delta", "delta": delta})
+                yield AssistantMessage(content=[ThinkingBlock(thinking="Plan it", signature="sig")], model="claude-sonnet-5-5")
+
+        asyncio.run(eng._process_streaming_response(Client()))
+        assert deltas == ["Plan"] and notes == ["Plan it"]
+
+
+class TestTerminalSafe:
+    def test_flags_and_joiners_are_dropped(self):
+        assert terminal_safe("🇨🇭 Switzerland · 🇩🇪 Germany") == "Switzerland · Germany"
+        assert terminal_safe("ok ✔\ufe0f done 👍🏽") == "ok ✔ done 👍"
+        assert terminal_safe("plain text, café") == "plain text, café"
+
+    def test_agent_messages_and_receipts_are_cleaned(self, session):
+        _st, t, view, b = session
+        ui = LedgerUI(b)
+        ui.tool_start("Bash", {"command": "python api_client.py"})
+        ui.tool_result("Bash", output="🇨🇭 Zürich: 12 jobs")
+        ui.thinking("Found jobs in 🇨🇭 and 🇩🇪.")
+        view.flush_live()
+        assert "\U0001f1e8" not in plain(t) and "Zürich: 12 jobs" in plain(t)
+
+
+class TestCommands:
+    def test_commands_are_echoed(self, app_session):
+        session, _history = app_session
+        session.run_command("/help")
+        assert "› /help" in plain(session.transcript)
+
+    def test_an_exact_command_wins_over_longer_ones(self, app_session):
+        session, _history = app_session
+        session.buf.text = "/mode"
+        assert session.palette_items()[0][0] == "/mode"
+        assert {c for c, _ in session.palette_items()} == {"/mode", "/model"}
+
+    def test_pickers_echo_once_something_is_picked(self, app_session):
+        session, history = app_session
+        session.run_command("/model")
+        assert "/model" not in plain(session.transcript)
+        history.get_history.return_value = [{"run_id": "abc123", "prompt": "p", "timestamp": "2026-10-25T15:47:18"}]
+        history.get_run.return_value = history.get_history.return_value[0]
+        session.run_command("/history")
+        assert "/history" not in plain(session.transcript)
+        pick(session.st, "abc123")
+        assert "› /history abc123" in plain(session.transcript)
+
+    def test_clear_starts_over_with_no_usage(self, app_session):
+        session, _history = app_session
+        st = session.st
+        session.view.user("all jobs on example.com")
+        st.cost, st.tokens, st.step, st.folded, st.last_client = 1.25, 9000, 4, True, Path("api_client.py")
+        session.run_command("/clear")
+        assert session.transcript.items == []
+        assert (st.cost, st.tokens, st.step, st.folded, st.last_client) == (0.0, 0, 0, False, None)
+        assert "$" not in "".join(text for _, text in session.view.status())
+
+    def test_clear_ends_a_waiting_run_and_waits_for_a_running_one(self, app_session):
+        session, _history = app_session
+        st = session.st
+        st.waiting = True
+        session.run_command("/clear")
+        assert session.bridge.follow_ups.get_nowait() is None
+        st.waiting, st.running = False, True
+        session.view.user("keep me")
+        session.run_command("/clear")
+        assert "keep me" in plain(session.transcript) and "a run is in progress" in plain(session.transcript)
+
+    def test_history_shows_a_run_and_offers_actions(self, app_session, tmp_path):
+        session, history = app_session
+        client = tmp_path / "api_client.py"
+        client.write_text("x = 1\n", encoding="utf-8")
+        run = {
+            "run_id": "abc123def456",
+            "prompt": "all open jobs on jobs.ashbyhq.com/openai",
+            "timestamp": "2026-10-25T15:47:18.5",
+            "model": "claude-sonnet-5-5",
+            "mode": "chrome-mcp",
+            "usage": {"estimated_cost_usd": 0.42, "input_tokens": 9000, "output_tokens": 1000},
+            "paths": {"script_path": str(client)},
+        }
+        history.get_history.return_value = [run]
+        history.get_run.return_value = run
+        session.run_command("/history")
+        assert session.st.picker is not None and session.st.picker.items[0][0] == "abc123def456"
+        pick(session.st, "abc123def456")
+        text = plain(session.transcript)
+        assert "› /history" in text and "abc123def456" in text and "sonnet 5.5" in text
+        assert "$0.42 · 10.0k tokens · api_client.py" in text
+        assert [value for value, _, _ in session.st.picker.items] == ["engineer", "messages", ""]
+
+    def test_history_with_no_runs(self, app_session):
+        session, history = app_session
+        history.get_history.return_value = []
+        session.run_command("/history")
+        assert session.st.picker is None and "no runs yet" in plain(session.transcript)
+
+    def test_messages_log_in_the_ledger_colors(self, app_session):
+        session, _history = app_session
+        log = [
+            {"type": "prompt", "content": "all jobs", "timestamp": "2026-10-25T15:47:18"},
+            {
+                "type": "tool_start",
+                "content": {"name": "mcp__chrome-devtools__navigate_page", "input": {"url": "https://example.com"}},
+                "timestamp": "2026-10-25T15:47:20",
+            },
+            {"type": "tool_result", "content": {"name": "Bash", "is_error": True, "output": "Traceback"}, "timestamp": "2026-10-25T15:47:21"},
+            {"type": "thinking", "content": "The jobs come from a GraphQL call.", "timestamp": "2026-10-25T15:47:22"},
+            {"type": "result", "content": {"script_path": "/x/api_client.py"}, "timestamp": "2026-10-25T15:48:00"},
+        ]
+        with patch("reverse_api.repl.app.MessageStore") as store:
+            store.return_value.load.return_value = log
+            session.run_command("/messages abc123")
+        text = plain(session.transcript)
+        assert "› /messages abc123" in text
+        assert "navigate" in text and "example.com" in text and "failed" in text and "GraphQL" in text and "api_client.py" in text
+
+    def test_settings_leave_full_screen_and_reload_after(self, app_session):
+        from reverse_api import cli
+
+        session, _history = app_session
+        session.app = MagicMock()
+        session.run_command("/settings")
+        session.app.exit.assert_called_once()
+        job = session.take_classic_job()
+        assert job is not None and session.take_classic_job() is None
+        with patch.object(cli, "handle_settings") as settings:
+            job()
+        settings.assert_called_once()
+        cli.config_manager.load.assert_called_once()
+
+    def test_classic_screens_wait_for_a_running_agent(self, app_session):
+        session, _history = app_session
+        session.app = MagicMock()
+        session.st.running = True
+        session.run_command("/settings")
+        session.app.exit.assert_not_called()
+        assert session.take_classic_job() is None
+
+    def test_a_failing_classic_screen_reports_and_returns(self, app_session):
+        session, _history = app_session
+
+        def broken() -> None:
+            raise RuntimeError("questionary blew up")
+
+        session.classic(broken, pause=False)
+        job = session.take_classic_job()
+        assert job is not None
+        job()
+        assert "questionary blew up" in plain(session.transcript)
 
 
 def test_card_path_is_a_link(session, tmp_path):

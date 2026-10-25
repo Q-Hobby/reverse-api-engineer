@@ -15,6 +15,7 @@ from claude_agent_sdk import (
     SdkMcpTool,
     StreamEvent,
     TextBlock,
+    ThinkingBlock,
     ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
@@ -177,10 +178,11 @@ class ClaudeEngineer(BaseEngineer):
             if isinstance(message, StreamEvent):
                 event = message.event
                 delta = event.get("delta") if event.get("type") == "content_block_delta" else None
-                if isinstance(delta, dict) and delta.get("type") == "text_delta" and message.parent_tool_use_id is None:
-                    stream_text = getattr(self.ui, "stream_text", None)
-                    if stream_text:
+                if isinstance(delta, dict) and message.parent_tool_use_id is None:
+                    if delta.get("type") == "text_delta" and (stream_text := getattr(self.ui, "stream_text", None)):
                         stream_text(delta.get("text", ""))
+                    elif delta.get("type") == "thinking_delta" and (stream_thinking := getattr(self.ui, "stream_thinking", None)):
+                        stream_thinking(delta.get("thinking", ""))
                 continue
             # Only ResultMessage carries billable per-query totals; AssistantMessage.usage
             # repeats for every content block of a response and would double count.
@@ -229,6 +231,8 @@ class ClaudeEngineer(BaseEngineer):
                     elif isinstance(block, TextBlock):
                         self.ui.thinking(block.text)
                         self.message_store.save_thinking(block.text)
+                    elif isinstance(block, ThinkingBlock) and (thinking_note := getattr(self.ui, "thinking_note", None)):
+                        thinking_note(block.thinking)
 
             elif isinstance(message, UserMessage) and getattr(self.ui, "shows_tool_results", False) and isinstance(message.content, list):
                 for block in message.content:
@@ -313,7 +317,7 @@ class ClaudeEngineer(BaseEngineer):
             env=build_sdk_env(),
             **build_sdk_settings(),
             **build_sdk_effort(),
-            **stream_options(),
+            **stream_options(self.model),
             stderr=self._handle_cli_stderr,
             mcp_servers={"verification": self._build_verification_mcp_server()},
         )

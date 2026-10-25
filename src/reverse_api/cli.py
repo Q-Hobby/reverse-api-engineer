@@ -2065,6 +2065,21 @@ def run_collector(prompt: str | None = None, model: str | None = None, output_di
         }
 
 
+def _session_browser_note(agent_provider: str, headless: bool) -> str | None:
+    """In the full-screen session, one line about the browser; setup steps only show up if connecting fails."""
+    from .repl.bridge import active
+
+    if active() is None:
+        return None
+    if agent_provider == "chrome-mcp":
+        if headless:
+            return "the agent uses its own headless Chrome"
+        return "the agent drives your Chrome through auto-connect · avoid sensitive sites while it runs"
+    if agent_provider == "agent-browser":
+        return "the agent drives a browser through the agent-browser CLI"
+    return None
+
+
 def run_auto_capture(
     prompt: str | None = None,
     url: str | None = None,
@@ -2091,7 +2106,10 @@ def run_auto_capture(
         url = options.get("url")
         model = options["model"]
 
-    if agent_provider == "chrome-mcp" and not headless:
+    session_note = _session_browser_note(agent_provider, headless)
+    if session_note:
+        console.print(session_note)
+    elif agent_provider == "chrome-mcp" and not headless:
         console.print()
         console.print(" [dim]chrome devtools mcp (auto-connect)[/dim]")
         console.print(" [dim]controlling your real chrome browser[/dim]")

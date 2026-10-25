@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import re
 from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
@@ -101,6 +102,7 @@ class Bridge:
         self.task: asyncio.Task | None = None
         self.pending_card: Path | None = None
         self.cost_base = 0.0
+        self.verified = False  # the agent called report_client_verified in this run
 
     def ui(self) -> LedgerUI:
         return LedgerUI(self)
@@ -125,7 +127,7 @@ class Bridge:
         try:
             source = path.read_text(encoding="utf-8")
         except OSError:
-            source = ""
+            return  # no file, no card: the run reported a path it never wrote
         self.view.card(path, source.count("\n") + 1 if source else 0, language_for(path))
         self.invalidate()
 
@@ -198,6 +200,7 @@ class LedgerUI:
         st.run_id, st.step, st.tokens = run_id, 0, 0
         st.running, st.waiting, st.verb, st.kind = True, False, "starting", "other"
         self.b.cost_base = st.cost
+        self.b.verified = False
         if model:
             st.model = model
         self.view.run_line(run_id, mode)
@@ -220,6 +223,8 @@ class LedgerUI:
         if found is None:
             return
         verb, target, kind, url, path = found
+        if name == "report_client_verified":
+            self.b.verified = True
         st = self.st
         st.kind = kind
         st.verb = "reading traffic" if verb in ("network", "request") else KIND_VERB.get(kind, "thinking")
@@ -260,6 +265,20 @@ class LedgerUI:
             self.view.plan(todos)
             self._changed()
 
+    def stream_thinking(self, delta: str) -> None:
+        """A delta of the model's reasoning summary, shown live in the margin."""
+        if delta:
+            self.b.flush_card()
+            self.view.stream(delta, kind="note")
+            self.st.verb, self.st.kind = "thinking", "other"
+            self._changed()
+
+    def thinking_note(self, text: str) -> None:
+        """The complete reasoning summary for a turn; settles the live note."""
+        if text and text.strip():
+            self.view.stream_done(text.strip(), kind="note")
+            self._changed()
+
     def stream_text(self, delta: str) -> None:
         """A text delta from the SDK, shown as it arrives."""
         if delta:
@@ -283,7 +302,8 @@ class LedgerUI:
 
     def success(self, script_path: str, local_path: str | None = None) -> None:
         _ = local_path
-        self.b.pending_card = Path(script_path)
+        # The card promises a working client, so it waits for the agent to have verified one.
+        self.b.pending_card = Path(script_path) if self.b.verified else None
         self._changed()
 
     def usage(self, usage: dict[str, Any]) -> None:
@@ -330,9 +350,22 @@ class CursorLedgerUI(LedgerUI):
 _bridge: Bridge | None = None
 
 
-def stream_options() -> dict[str, Any]:
-    """ClaudeAgentOptions kwargs: partial messages only for the session, which shows text as it streams."""
-    return {"include_partial_messages": True} if _bridge is not None else {}
+def adaptive_thinking(model: str | None) -> bool:
+    """Adaptive thinking exists from the 4.6 models on, and not on Haiku 4.5; unknown names get none."""
+    m = re.match(r"claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)", model or "")
+    if m is None:
+        return False
+    return (int(m.group(2)), int(m.group(3))) >= (4, 6) and not (m.group(1) == "haiku" and m.group(2) == "4")
+
+
+def stream_options(model: str | None = None) -> dict[str, Any]:
+    """ClaudeAgentOptions kwargs for the session: streamed text, and reasoning summaries to show while the agent thinks."""
+    if _bridge is None:
+        return {}
+    options: dict[str, Any] = {"include_partial_messages": True}
+    if adaptive_thinking(model):
+        options["thinking"] = {"type": "adaptive", "display": "summarized"}
+    return options
 
 
 def active() -> Bridge | None:
