@@ -67,6 +67,7 @@ COMMANDS = {
     "/mode": "choose the mode",
     "/settings": "all settings",
     "/history": "past runs, to look at or re-engineer",
+    "/resume": "continue a past run's conversation",
     "/messages": "what the agent did in a past run",
     "/output": "everything from this session, unfolded",
     "/open": "open the latest client",
@@ -76,7 +77,7 @@ COMMANDS = {
 }
 HISTORY_RUNS = 20
 # Commands that open a picker are echoed once a choice shows something, not when the picker opens.
-PICKER_COMMANDS = {"/model", "/effort", "/mode", "/history", "/messages"}
+PICKER_COMMANDS = {"/model", "/effort", "/mode", "/history", "/messages", "/resume"}
 URL_IN_PROMPT = re.compile(r"https?://([^/\s]+)|\b((?:[\w-]+\.)+(?:com|io|co|ch|de|fr|uk|org|net|dev|ai|app|so|sh|eu|jobs))\b")
 
 
@@ -277,6 +278,11 @@ class Session:
             self.classic(lambda: self.cli.handle_settings(), then=self.reload_settings, pause=False)
         elif cmd == "/history":
             self.pick_run(cmd, "past runs", self.show_run)
+        elif cmd == "/resume":
+            if arg:
+                self.resume(arg)
+            else:
+                self.pick_run(cmd, "resume a run", self.resume, keep=self.cli.resumable, empty="no run can be resumed yet · runs from now on can")
         elif cmd == "/messages":
             if arg:
                 self.show_messages(arg)
@@ -295,11 +301,19 @@ class Session:
 
     # past runs
 
-    def pick_run(self, cmd: str, title: str, then: Callable[[str], None]) -> None:
-        runs = self.cli.session_manager.get_history(limit=HISTORY_RUNS)
+    def pick_run(
+        self,
+        cmd: str,
+        title: str,
+        then: Callable[[str], None],
+        keep: Callable[[dict[str, Any]], bool] | None = None,
+        empty: str = "no runs yet",
+    ) -> None:
+        runs = self.cli.session_manager.get_history(limit=len(self.cli.session_manager.history))
+        runs = [r for r in runs if keep is None or keep(r)][:HISTORY_RUNS]
         if not runs:
             self.view.command(cmd)
-            self.view.notice("no runs yet")
+            self.view.notice(empty)
             return
         items = [(r["run_id"], r["run_id"], run_summary(r)) for r in runs]
         self.open_picker(title, items, None, lambda value: then(value) if value else None)
@@ -311,14 +325,17 @@ class Session:
             self.view.notice(f"no run {run_id}")
             return
         self.view.run_details(run)
-        actions = [
+        actions = [("resume", "resume", "continue its conversation")] if self.cli.resumable(run) else []
+        actions += [
             ("engineer", "re-engineer", "write its client again from the capture"),
             ("messages", "messages", "what the agent did, step by step"),
             ("", "back", ""),
         ]
 
         def act(value: str | None) -> None:
-            if value == "engineer":
+            if value == "resume":
+                self.resume(run_id)
+            elif value == "engineer":
                 self.reengineer(run_id)
             elif value == "messages":
                 self.show_messages(run_id)
@@ -352,6 +369,25 @@ class Session:
             self.view.notice(f"no messages for run {run_id}")
         else:
             self.view.message_log(entries)
+        self.invalidate()
+
+    def resume(self, run_id: str) -> None:
+        """Reopen a past run's SDK session; the next message in the bar continues its conversation."""
+        st = self.st
+        run = self.cli.session_manager.get_run(run_id)
+        self.view.command("/resume", run_id)
+        if st.running or st.waiting:
+            self.view.notice("a run is open · /new ends it first")
+        elif run is None or not self.cli.resumable(run):
+            self.view.notice(f"run {run_id} has no saved session to resume" if run else f"no run {run_id}")
+        elif st.sdk != "claude":
+            self.view.notice("resume works with the claude sdk · switch it in /settings")
+        else:
+            self.view.run_details(run)
+            self.view.gap()
+            st.host, st.client_name = host_in(str(run.get("prompt") or "")), ""
+            st.started, st.running, st.verb, st.kind = time.time(), True, "reopening", "other"
+            self.work(lambda: self.cli.resume_run(run_id))
         self.invalidate()
 
     def reengineer(self, run_id: str) -> None:

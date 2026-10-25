@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import sys
+import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -2101,8 +2102,12 @@ def run_auto_capture(
     interactive: bool = True,
     headless: bool = False,
     json_event_sink: Callable[[dict[str, Any]], None] | None = None,
+    resume: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Auto mode: LLM-driven browser automation + real-time reverse engineering."""
+    """Auto mode: LLM-driven browser automation + real-time reverse engineering.
+
+    ``resume`` is a past run's history entry: the run reopens its SDK session instead of starting one.
+    """
     output_dir = output_dir or config_manager.get("output_dir")
 
     if prompt is None:
@@ -2162,7 +2167,7 @@ def run_auto_capture(
     if model is None:
         model = default_model_for_configured_sdk(sdk)
 
-    run_id = generate_run_id()
+    run_id = resume["run_id"] if resume else generate_run_id()
     timestamp = get_timestamp()
 
     if agent_provider == "chrome-mcp":
@@ -2171,15 +2176,16 @@ def run_auto_capture(
         mode_label = "agent-browser"
     else:
         mode_label = "auto"
-    session_manager.add_run(
-        run_id=run_id,
-        prompt=prompt,
-        timestamp=timestamp,
-        url=url,
-        model=model,
-        mode=mode_label,
-        paths={"har_dir": str(get_har_dir(run_id, output_dir))},
-    )
+    if not resume:
+        session_manager.add_run(
+            run_id=run_id,
+            prompt=prompt,
+            timestamp=timestamp,
+            url=url,
+            model=model,
+            mode=mode_label,
+            paths={"har_dir": str(get_har_dir(run_id, output_dir))},
+        )
 
     try:
         output_language = config_manager.get("output_language", "python")
@@ -2252,6 +2258,12 @@ def run_auto_capture(
                 interactive=interactive,
                 headless=headless,
             )
+            engineer.on_session = lambda sid: session_manager.update_run(run_id=run_id, sdk_session={"id": sid, "mode": "agent"})
+            if resume:
+                engineer.resume_session = resume["sdk_session"]["id"]
+                engineer.cost_before = float((resume.get("usage") or {}).get("estimated_cost_usd") or 0)
+                # A new browser stretch records its own HAR instead of replacing the run's capture.
+                engineer.mcp_run_id = f"{run_id}-{int(time.time())}"
 
         if json_event_sink is not None:
             from .json_stream import attach_json_stream_to_engineer
@@ -2289,9 +2301,10 @@ def run_auto_capture(
 
         # Update session with results
         if result:
+            usage = result.get("usage", {})
             session_manager.update_run(
                 run_id=run_id,
-                usage=result.get("usage", {}),
+                usage=_run_totals(resume.get("usage") or {}, usage) if resume else usage,
                 paths={"script_path": result.get("script_path")},
             )
 
@@ -2507,8 +2520,9 @@ def run_engineer(
     output_mode: str = "client",
     interactive: bool = True,
     json_event_sink: Callable[[dict[str, Any]], None] | None = None,
+    resume: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Shared logic for reverse engineering."""
+    """Shared logic for reverse engineering. ``resume`` is the run's history entry when reopening its session."""
     if not har_path or not prompt:
         # Load from history if possible
         run_data = session_manager.get_run(run_id)
@@ -2605,6 +2619,9 @@ def run_engineer(
             output_mode=output_mode,
             interactive=interactive,
             json_event_sink=json_event_sink,
+            resume_session=resume["sdk_session"]["id"] if resume else None,
+            cost_before=float(((resume or {}).get("usage") or {}).get("estimated_cost_usd") or 0),
+            on_session=lambda sid: session_manager.update_run(run_id=run_id, sdk_session={"id": sid, "mode": "engineer"}),
         )
 
     if result:
@@ -2649,14 +2666,44 @@ def run_engineer(
                 console.print(" [dim]>[/dim] [white]decoding complete[/white]")
             console.print(f" [dim]>[/dim] [white]{result['script_path']}[/white]\n")
 
+        usage = result.get("usage", {})
         session_manager.update_run(
             run_id=run_id,
             sdk=sdk,
             output_mode=output_mode,
-            usage=result.get("usage", {}),
+            usage=_run_totals(resume.get("usage") or {}, usage) if resume else usage,
             paths={"script_path": result.get("script_path")},
         )
     return result
+
+
+def resumable(run: dict[str, Any] | None) -> bool:
+    return bool(((run or {}).get("sdk_session") or {}).get("id"))
+
+
+def _run_totals(before: dict[str, Any], now: dict[str, Any]) -> dict[str, Any]:
+    """A resumed run's usage: this stretch's tokens and cost added to what the run spent before."""
+    totals = {**before, **now}
+    for key in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "estimated_cost_usd"):
+        if isinstance(before.get(key), (int, float)) and isinstance(now.get(key), (int, float)):
+            totals[key] = before[key] + now[key]
+    return totals
+
+
+def resume_run(run_id: str) -> dict[str, Any] | None:
+    """Reopen a past Claude run's SDK session; the user's next message continues that conversation."""
+    run = session_manager.get_run(run_id)
+    if run is None or not resumable(run):
+        console.print(f" [dim]run {escape(run_id)} has no saved session to resume[/dim]")
+        return None
+    if config_manager.get("sdk", "claude") != "claude":
+        console.print(" [dim]resume works with the claude sdk · switch it in /settings[/dim]")
+        return None
+    model = run.get("model") or None
+    if run["sdk_session"].get("mode") == "agent":
+        provider = str(run["mode"]) if run.get("mode") in ("chrome-mcp", "agent-browser") else "auto"
+        return run_auto_capture(prompt=run["prompt"], url=run.get("url"), model=model, agent_provider=provider, resume=run)
+    return run_engineer(run_id, model=model, resume=run)
 
 
 def _get_run_details(run: dict) -> dict:

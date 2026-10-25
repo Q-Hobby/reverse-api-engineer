@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from claude_agent_sdk import (
     ResultMessage,
     SdkMcpTool,
     StreamEvent,
+    SystemMessage,
     TextBlock,
     ThinkingBlock,
     ToolPermissionContext,
@@ -41,6 +43,33 @@ class ClaudeEngineer(BaseEngineer):
     # point, so no further query on the same client can succeed and the
     # follow-up loop must not offer another turn.
     _context_overflowed = False
+
+    # The run's SDK session, kept so /resume can reopen it. With resume_session set the run reopens
+    # that session and starts from the user's next message. The SDK's total_cost_usd counts the whole
+    # session, so cost_before (what the run spent earlier) is taken off to report this stretch only.
+    sdk_session_id: str | None = None
+    resume_session: str | None = None
+    cost_before = 0.0
+    on_session: Callable[[str], None] | None = None
+
+    def _note_session(self, message: Any) -> None:
+        sid = getattr(message, "session_id", None)
+        if sid is None and isinstance(message, SystemMessage):
+            sid = message.data.get("session_id")
+        if isinstance(sid, str) and sid and sid != self.sdk_session_id:
+            self.sdk_session_id = sid
+            if self.on_session is not None:
+                self.on_session(sid)
+
+    def _resume_options(self) -> dict[str, Any]:
+        return {"resume": self.resume_session} if self.resume_session else {}
+
+    async def _opening_message(self, brief: str) -> str | None:
+        """The first query: the run's brief, or when resuming, the user's next message."""
+        message = await self._prompt_follow_up() if self.resume_session else brief
+        if message:
+            self.message_store.save_prompt(message)
+        return message
 
     def _print_context_overflow_help(self) -> None:
         """Explain a context-window overflow and how to continue."""
@@ -175,6 +204,7 @@ class ClaudeEngineer(BaseEngineer):
         Returns a result dict on success, or None on error.
         """
         async for message in client.receive_response():
+            self._note_session(message)
             if isinstance(message, StreamEvent):
                 event = message.event
                 delta = event.get("delta") if event.get("type") == "content_block_delta" else None
@@ -269,7 +299,7 @@ class ClaudeEngineer(BaseEngineer):
 
                         # total_cost_usd is the SDK's own figure, cumulative over the session.
                         cost = (
-                            float(message.total_cost_usd)
+                            max(0.0, float(message.total_cost_usd) - self.cost_before)
                             if isinstance(message.total_cost_usd, (int, float))
                             else calculate_cost(
                                 model_id=self.model,
@@ -306,7 +336,6 @@ class ClaudeEngineer(BaseEngineer):
         self._context_overflowed = False
 
         system_prompt, user_message = self._build_prompts()
-        self.message_store.save_prompt(user_message)
 
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
@@ -318,6 +347,7 @@ class ClaudeEngineer(BaseEngineer):
             **build_sdk_settings(),
             **build_sdk_effort(),
             **stream_options(self.model),
+            **self._resume_options(),
             stderr=self._handle_cli_stderr,
             mcp_servers={"verification": self._build_verification_mcp_server()},
         )
@@ -326,7 +356,10 @@ class ClaudeEngineer(BaseEngineer):
 
         try:
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(user_message)
+                opening = await self._opening_message(user_message)
+                if not opening:
+                    return {}
+                await client.query(opening)
 
                 # Process initial response
                 last_result = await self._process_streaming_response(client)
@@ -390,8 +423,13 @@ def run_reverse_engineering(
     output_mode: str = "client",
     interactive: bool = True,
     json_event_sink: Any = None,
+    resume_session: str | None = None,
+    cost_before: float = 0.0,
+    on_session: Callable[[str], None] | None = None,
 ) -> dict[str, Any] | None:
     """Run reverse engineering with the specified SDK.
+
+    resume_session, cost_before and on_session apply to the Claude SDK only, see ClaudeEngineer.
 
     Args:
         sdk: "claude", "opencode", "copilot", or "cursor" - determines which SDK to use
@@ -483,6 +521,7 @@ def run_reverse_engineering(
             output_mode=output_mode,
             interactive=interactive,
         )
+        engineer.resume_session, engineer.cost_before, engineer.on_session = resume_session, cost_before, on_session
 
     if json_event_sink is not None:
         from .json_stream import attach_json_stream_to_engineer

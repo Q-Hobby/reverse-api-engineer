@@ -4,7 +4,7 @@ import asyncio
 import threading
 from concurrent.futures import Future
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -607,3 +607,156 @@ class TestRunLifecycle:
         monkeypatch.setattr(app.os, "startfile", opened.append, raising=False)
         app.open_target("file:///C:/Users/test/api_client.py")
         assert opened == ["C:\\Users\\test\\api_client.py"]
+
+
+class TestResume:
+    def _auto(self, tmp_path):
+        from reverse_api.auto_engineer import ClaudeAutoEngineer
+
+        with (
+            patch("reverse_api.auto_engineer.get_har_dir", return_value=tmp_path / "har"),
+            patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path / "scripts"),
+            patch("reverse_api.base_engineer.MessageStore"),
+        ):
+            return ClaudeAutoEngineer(run_id="r1", prompt="jobs", model="claude-sonnet-5-5", output_dir=str(tmp_path))
+
+    @staticmethod
+    def _result(session: str, cost: float):
+        from claude_agent_sdk import ResultMessage
+
+        return ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=1,
+            session_id=session,
+            total_cost_usd=cost,
+            usage={"input_tokens": 10, "output_tokens": 2},
+        )
+
+    def test_the_engine_reports_its_session_once(self, tmp_path):
+        from claude_agent_sdk import SystemMessage
+
+        eng = self._auto(tmp_path)
+        seen: list[str] = []
+        eng.on_session = seen.append
+        result = self._result("s-1", 0.4)
+
+        class Client:
+            async def receive_response(self):
+                yield SystemMessage(subtype="init", data={"session_id": "s-1"})
+                yield result
+
+        out = asyncio.run(eng._process_streaming_response(Client()))
+        assert seen == ["s-1"] and eng.sdk_session_id == "s-1"
+        assert out is not None and out["usage"]["estimated_cost_usd"] == pytest.approx(0.4)
+
+    def test_a_resumed_run_reopens_the_session_and_starts_from_the_next_message(self, tmp_path):
+        eng = self._auto(tmp_path)
+        eng.resume_session, eng.cost_before = "s-1", 1.0
+        replies = iter(["now add pagination", None])
+        eng._prompt_follow_up = AsyncMock(side_effect=lambda: next(replies))  # type: ignore[method-assign]
+        queries: list[str] = []
+        result = self._result("s-1", 1.25)
+
+        class Client:
+            def __init__(self, options):
+                self.options = options
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+            async def query(self, text):
+                queries.append(text)
+
+            async def receive_response(self):
+                yield result
+
+        made: list[Client] = []
+
+        def make(options):
+            made.append(Client(options))
+            return made[-1]
+
+        with patch("reverse_api.auto_engineer.ClaudeSDKClient", side_effect=make):
+            out = asyncio.run(eng.analyze_and_generate())
+        assert made[0].options.resume == "s-1"
+        assert queries == ["now add pagination"], "the run's brief is not sent again"
+        assert out is not None and out["usage"]["estimated_cost_usd"] == pytest.approx(0.25), "only this stretch's cost"
+
+    def test_ending_a_resumed_run_before_a_message_is_not_an_error(self, tmp_path):
+        eng = self._auto(tmp_path)
+        eng.resume_session = "s-1"
+        eng._prompt_follow_up = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        client = MagicMock()
+        client.return_value.__aenter__ = AsyncMock(return_value=client.return_value)
+        client.return_value.__aexit__ = AsyncMock(return_value=False)
+        client.return_value.query = AsyncMock()
+        with patch("reverse_api.auto_engineer.ClaudeSDKClient", client):
+            assert asyncio.run(eng.analyze_and_generate()) == {}
+        client.return_value.query.assert_not_called()
+
+    def test_resume_run_picks_the_engine_from_the_saved_session(self, monkeypatch):
+        from reverse_api import cli
+
+        agent = {"run_id": "a1", "prompt": "jobs", "mode": "chrome-mcp", "model": "claude-opus-5-5", "sdk_session": {"id": "s-a", "mode": "agent"}}
+        engineer_run = {"run_id": "e1", "prompt": "cars", "mode": "manual", "model": None, "sdk_session": {"id": "s-e", "mode": "engineer"}}
+        runs = {"a1": agent, "e1": engineer_run, "old": {"run_id": "old", "prompt": "x", "mode": "auto"}}
+        history = MagicMock()
+        history.get_run.side_effect = runs.get
+        config = MagicMock()
+        config.get.side_effect = lambda key, default=None: default
+        monkeypatch.setattr(cli, "session_manager", history)
+        monkeypatch.setattr(cli, "config_manager", config)
+        with patch.object(cli, "run_auto_capture") as auto, patch.object(cli, "run_engineer") as engineer:
+            cli.resume_run("a1")
+            cli.resume_run("e1")
+            assert cli.resume_run("old") is None
+        auto.assert_called_once_with(prompt="jobs", url=None, model="claude-opus-5-5", agent_provider="chrome-mcp", resume=agent)
+        engineer.assert_called_once_with("e1", model=None, resume=engineer_run)
+
+    def test_run_totals_add_up_across_a_resume(self):
+        from reverse_api.cli import _run_totals
+
+        before = {"input_tokens": 100, "output_tokens": 10, "estimated_cost_usd": 1.0, "service_tier": "standard"}
+        now = {"input_tokens": 50, "output_tokens": 5, "estimated_cost_usd": 0.25}
+        totals = {"input_tokens": 150, "output_tokens": 15, "estimated_cost_usd": 1.25, "service_tier": "standard"}
+        assert _run_totals(before, now) == totals
+
+    def test_resume_lists_only_runs_with_a_session_and_reopens_the_pick(self, app_session):
+        session, history = app_session
+        run = {"run_id": "a1", "prompt": "jobs on example.com", "timestamp": "2026-10-25T16:00:00", "sdk_session": {"id": "s", "mode": "agent"}}
+        history.history = [run, {"run_id": "old", "prompt": "x", "timestamp": "2026-10-24T10:00:00"}]
+        history.get_history.side_effect = lambda limit=10: history.history[:limit]
+        history.get_run.side_effect = {"a1": run}.get
+        session.run_command("/resume")
+        assert [v for v, _, _ in session.st.picker.items] == ["a1"]
+        with patch.object(session, "work") as work:
+            pick(session.st, "a1")
+        work.assert_called_once()
+        assert session.st.running and session.st.verb == "reopening"
+        assert "› /resume a1" in plain(session.transcript)
+
+    def test_history_offers_resume_only_when_the_run_has_a_session(self, app_session):
+        session, history = app_session
+        run = {"run_id": "a1", "prompt": "jobs", "timestamp": "2026-10-25T16:00:00", "sdk_session": {"id": "s", "mode": "agent"}}
+        history.get_run.return_value = run
+        session.show_run("a1")
+        assert session.st.picker.items[0][0] == "resume"
+        run.pop("sdk_session")
+        session.st.picker = None
+        session.show_run("a1")
+        assert "resume" not in [v for v, _, _ in session.st.picker.items]
+
+    def test_resume_waits_for_an_open_run(self, app_session):
+        session, history = app_session
+        history.get_run.return_value = {"run_id": "a1", "prompt": "jobs", "sdk_session": {"id": "s", "mode": "agent"}}
+        session.st.waiting = True
+        with patch.object(session, "work") as work:
+            session.run_command("/resume a1")
+        work.assert_not_called()
+        assert "a run is open" in plain(session.transcript)

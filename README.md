@@ -129,6 +129,7 @@ Slash commands inside the CLI:
 - `/settings`: configure model, SDK, agent provider, and sync settings.
 - `/history`: list past runs with timestamps, costs, and status.
 - `/messages <run_id>`: view detailed message logs for a run.
+- `/resume [run_id]`: continue a past run's conversation where it stopped. Works for Claude runs started from this version on.
 - `/help` (alias: `/commands`): show the command list.
 - `/exit` (alias: `/quit`): leave the CLI.
 

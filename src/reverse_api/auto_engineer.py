@@ -228,7 +228,6 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 return None
 
         system_prompt, user_message = self._get_active_prompts()
-        self.message_store.save_prompt(user_message)
 
         # Every provider branch below needs the report_client_verified tool
         # available (see engineer.py's _build_verification_mcp_server) —
@@ -258,6 +257,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
             **build_sdk_settings(),
             **build_sdk_effort(),
             **stream_options(self.model),
+            **self._resume_options(),
                 stderr=self._handle_cli_stderr,
             )
         else:
@@ -273,6 +273,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
             **build_sdk_settings(),
             **build_sdk_effort(),
             **stream_options(self.model),
+            **self._resume_options(),
                 stderr=self._handle_cli_stderr,
             )
 
@@ -280,7 +281,10 @@ class ClaudeAutoEngineer(ClaudeEngineer):
 
         try:
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(user_message)
+                opening = await self._opening_message(user_message)
+                if not opening:
+                    return {}
+                await client.query(opening)
 
                 # Process initial response
                 last_result = await self._process_streaming_response(client)
