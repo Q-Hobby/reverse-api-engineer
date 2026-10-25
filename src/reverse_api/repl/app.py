@@ -55,7 +55,7 @@ MODES = {
 }
 EFFORT_NOTES = {
     "low": "fastest, fewer tool calls",
-    "medium": "lighter reasoning, Opus 5.5's default",
+    "medium": "lighter reasoning, the default on Opus 5.5 and Haiku 5.5",
     "high": "deep reasoning, the default for most models",
     "xhigh": "deeper reasoning on hard captures",
     "max": "most thorough, slowest and priciest",

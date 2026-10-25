@@ -180,6 +180,7 @@ class TestViewHelpers:
         assert model_label("claude-sonnet-5-5") == "sonnet 5.5"
         assert model_label("gpt-5") == "gpt-5"
         assert default_effort("claude-opus-5-5") == "medium"
+        assert default_effort("claude-haiku-5-5") == "medium"
         assert default_effort("claude-sonnet-5-5") == "high"
 
     def test_preview_starts_at_the_first_definition(self):

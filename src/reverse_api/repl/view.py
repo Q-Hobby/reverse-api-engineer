@@ -90,7 +90,7 @@ def model_label(model: str | None) -> str:
 
 
 def default_effort(model: str | None) -> str:
-    return "medium" if model == "claude-opus-5-5" else "high"
+    return "medium" if model in ("claude-opus-5-5", "claude-haiku-5-5") else "high"
 
 
 def language_for(path: str | Path) -> str:

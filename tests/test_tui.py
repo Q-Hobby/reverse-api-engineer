@@ -334,7 +334,12 @@ class TestGetModelChoices:
     def test_includes_sonnet(self):
         """Includes Sonnet model."""
         values = [c["value"] for c in get_model_choices()]
-        assert "claude-sonnet-4-6" in values
+        assert "claude-sonnet-5-5" in values
+
+    def test_haiku_5_5_replaces_the_retired_models(self):
+        values = [c["value"] for c in get_model_choices()]
+        assert "claude-haiku-5-5" in values
+        assert "claude-sonnet-4-6" not in values and "claude-haiku-4-5" not in values
 
     def test_includes_opus(self):
         """Includes Opus model."""

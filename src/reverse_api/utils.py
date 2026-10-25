@@ -231,7 +231,8 @@ async def _generate_folder_name_async(prompt: str) -> str:
     options = ClaudeAgentOptions(
         allowed_tools=[],  # No tools needed for simple text generation
         permission_mode="dontAsk",
-        model="claude-haiku-4-5",
+        model="claude-haiku-5-5",
+        effort="low",  # a folder name needs no reasoning
         **build_sdk_settings(),
     )
 

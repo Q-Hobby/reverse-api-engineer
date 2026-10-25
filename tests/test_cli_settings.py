@@ -109,3 +109,13 @@ def test_opencode_pair_picker_explains_server_authentication():
 
     output = " ".join(str(call.args[0]) for call in print_message.call_args_list)
     assert "OPENCODE_SERVER_PASSWORD" in output
+
+
+def test_model_flag_accepts_retired_ids_but_lists_current_ones():
+    from click.testing import CliRunner
+
+    choice = cli.ModelChoice()
+    assert choice.convert("claude-sonnet-4-6", None, None) == "claude-sonnet-4-6"
+    assert choice.convert("claude-haiku-5-5", None, None) == "claude-haiku-5-5"
+    help_text = CliRunner().invoke(cli.main, ["agent", "--help"]).output
+    assert "claude-haiku-5-5" in help_text and "claude-sonnet-4-6" not in help_text

@@ -350,14 +350,17 @@ class ClaudeUI:
         self.console.print(f"  [dim]![/dim] [yellow]sync error:[/yellow] {escape(message)}")
 
 
+# Out of the pickers, still accepted from config and --model. Sonnet 4.6 stays the default model.
+RETIRED_MODEL_IDS = ["claude-sonnet-4-6", "claude-haiku-4-5"]
+
+
 def get_model_choices() -> list[dict]:
     """Get available model choices for questionary."""
     return [
-        {"name": "Sonnet 4.6 [Balanced]", "value": "claude-sonnet-4-6"},
         {"name": "Sonnet 5.5 [Balanced]", "value": "claude-sonnet-5-5"},
         {"name": "Opus 4.6 [Power]", "value": "claude-opus-4-6"},
         {"name": "Opus 5.5 [Power]", "value": "claude-opus-5-5"},
-        {"name": "Haiku 4.5 [Speed]", "value": "claude-haiku-4-5"},
+        {"name": "Haiku 5.5 [Speed]", "value": "claude-haiku-5-5"},
     ]
 
 

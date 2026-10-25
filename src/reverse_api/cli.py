@@ -34,6 +34,7 @@ from .session import SessionManager
 from .tui import (
     ERROR_CTA,
     MODE_COLORS,
+    RETIRED_MODEL_IDS,
     THEME_DIM,
     THEME_PRIMARY,
     THEME_SECONDARY,
@@ -123,6 +124,17 @@ def _select_ollama_model_for_settings() -> str | None:
         ),
     ).ask()
     return None if selected in {None, "back"} else str(selected)
+
+
+class ModelChoice(click.Choice):
+    """The models in the pickers, plus retired ids that configs and scripts still pass; help lists only the current ones."""
+
+    def __init__(self) -> None:
+        self.current = [c["value"] for c in get_model_choices()]
+        super().__init__(self.current + RETIRED_MODEL_IDS)
+
+    def get_metavar(self, *args: Any, **kwargs: Any) -> str:
+        return "[" + "|".join(self.current) + "]"
 
 
 def default_model_for_configured_sdk(sdk: str | None = None) -> str:
@@ -1721,7 +1733,7 @@ Exit codes:
 @click.option(
     "--model",
     "-m",
-    type=click.Choice([c["value"] for c in get_model_choices()]),
+    type=ModelChoice(),
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")
@@ -1870,7 +1882,7 @@ Examples:
 @click.option(
     "--model",
     "-m",
-    type=click.Choice([c["value"] for c in get_model_choices()]),
+    type=ModelChoice(),
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory for run metadata and messages.")
@@ -2371,7 +2383,7 @@ Exit codes:
 @click.option(
     "--model",
     "-m",
-    type=click.Choice([c["value"] for c in get_model_choices()]),
+    type=ModelChoice(),
     default=None,
 )
 @click.option("--output-dir", "-o", default=None, help="Custom output directory.")

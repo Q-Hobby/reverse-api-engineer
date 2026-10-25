@@ -53,6 +53,11 @@ class TestModelPricing:
         assert MODEL_PRICING["claude-opus-4-6"]["input"] > MODEL_PRICING["claude-sonnet-4-6"]["input"]
         assert MODEL_PRICING["claude-opus-4-6"]["output"] > MODEL_PRICING["claude-sonnet-4-6"]["output"]
 
+    def test_haiku_5_5_is_the_cheapest_claude(self):
+        haiku = MODEL_PRICING["claude-haiku-5-5"]
+        claude = [v for k, v in MODEL_PRICING.items() if k.startswith("claude-") and k != "claude-haiku-5-5"]
+        assert all(haiku["input"] < v["input"] and haiku["output"] < v["output"] for v in claude)
+
     def test_haiku_cheapest_claude(self):
         """Haiku should be cheapest Claude model."""
         assert MODEL_PRICING["claude-haiku-4-5"]["input"] < MODEL_PRICING["claude-sonnet-4-6"]["input"]

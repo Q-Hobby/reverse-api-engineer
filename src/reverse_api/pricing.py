@@ -29,6 +29,14 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
         "cache_read": 0.20,
         "reasoning": 20.00,
     },
+    # Up to a 100K-token prompt; longer prompts cost $0.50 / $2.50. The SDK's own cost is used when it reports one.
+    "claude-haiku-5-5": {
+        "input": 0.10,
+        "output": 0.50,
+        "cache_creation": 0.125,
+        "cache_read": 0.01,
+        "reasoning": 0.50,
+    },
     "claude-haiku-4-5": {
         "input": 1.00,
         "output": 5.00,
@@ -149,6 +157,10 @@ _LITELLM_MODEL_MAP = {
     "claude-opus-5-5": [
         "claude-opus-5-5",
         "anthropic.claude-opus-5-5",
+    ],
+    "claude-haiku-5-5": [
+        "claude-haiku-5-5",
+        "anthropic.claude-haiku-5-5",
     ],
     "claude-haiku-4-5": [
         "claude-haiku-4-5",
