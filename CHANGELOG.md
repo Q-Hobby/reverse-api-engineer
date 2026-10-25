@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Agent skill**: `skills/reverse-api-engineer` teaches Claude Code, Codex, Cursor, OpenCode and other agents to drive the scripted CLI (preflight, capture, verify, iterate). Install with `npx skills add kalil0321/reverse-api-engineer`.
+
 ## [0.14.0] - 2026-09-23
 
 ### Security
