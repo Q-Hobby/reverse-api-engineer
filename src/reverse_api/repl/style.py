@@ -116,7 +116,8 @@ RECEIPT_HL = ReceiptHighlighter()
 
 
 def width() -> int:
-    return max(40, shutil.get_terminal_size().columns)
+    """The terminal's real width; layouts that need room clamp their own sizes."""
+    return max(1, shutil.get_terminal_size().columns)
 
 
 def height() -> int:

@@ -773,6 +773,7 @@ class CopilotAutoEngineer:
             local_path = str(eng.local_scripts_dir / eng._get_client_filename()) if eng.local_scripts_dir else None
             eng.ui.success(script_path, local_path)
             eng.usage_metadata["estimated_cost_usd"] = 0.0
+            eng._report_usage()
 
             result: dict[str, Any] = {
                 "script_path": script_path,

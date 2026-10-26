@@ -44,8 +44,8 @@ def debug_log(msg: str) -> None:
 
 def format_error(e: Exception) -> str:
     """Format exception with full details in a pretty, readable format."""
-    error_type = type(e).__name__
-    error_msg = str(e)
+    error_type = escape(type(e).__name__)
+    error_msg = escape(str(e))
 
     # Build comprehensive error message with pretty formatting
     lines = []
@@ -62,7 +62,7 @@ def format_error(e: Exception) -> str:
         if hasattr(e, "response") and e.response is not None:
             try:
                 status_code = e.response.status_code
-                status_text = e.response.reason_phrase or "Unknown"
+                status_text = escape(e.response.reason_phrase or "Unknown")
                 lines.append(f"\n[dim]HTTP Status:[/dim] [yellow]{status_code}[/yellow] {status_text}")
 
                 # Try to parse JSON response for better formatting
@@ -74,13 +74,13 @@ def format_error(e: Exception) -> str:
                     lines.append("\n[dim]Response Body:[/dim]")
                     # Split into lines and indent
                     for line in response_text.split("\n"):
-                        lines.append(f"  [dim]{line}[/dim]")
+                        lines.append(f"  [dim]{escape(line)}[/dim]")
                 except Exception:
                     # Fall back to text if not JSON
                     response_text = e.response.text[:500]
                     if response_text:
                         lines.append("\n[dim]Response Body:[/dim]")
-                        lines.append(f"  [dim]{response_text}[/dim]")
+                        lines.append(f"  [dim]{escape(response_text)}[/dim]")
             except Exception:
                 pass
 
@@ -106,7 +106,7 @@ def format_error(e: Exception) -> str:
         tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         lines.append("\n[dim]Traceback:[/dim]")
         for line in tb_str.split("\n"):
-            lines.append(f"  [dim]{line}[/dim]")
+            lines.append(f"  [dim]{escape(line)}[/dim]")
 
     return "\n".join(lines)
 
@@ -319,7 +319,7 @@ class OpenCodeEngineer(BaseEngineer):
             error_msg = format_error(e)
             debug_log(f"ConnectError in analyze_and_generate: {error_msg}")
             self.opencode_ui.error("Connection error")
-            self.opencode_ui.console.print(f"\n[dim]Details: {escape(str(error_msg))}[/dim]")
+            self.opencode_ui.console.print(f"\n[dim]Details:[/dim] {error_msg}")
             self.opencode_ui.console.print("\n[dim]Please run: opencode serve[/dim]")
             self.message_store.save_error(f"Connection error: {error_msg}")
             return None

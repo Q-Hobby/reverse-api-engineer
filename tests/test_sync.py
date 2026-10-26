@@ -2,6 +2,7 @@
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -75,6 +76,18 @@ class TestSyncHandler:
         handler = SyncHandler(source, dest)
         handler._sync_file(str((real / "api_client.py").resolve()))
         assert (dest / "api_client.py").read_text(encoding="utf-8") == "x = 1\n"
+
+    def test_a_file_that_is_a_symlink_syncs_as_itself_not_its_target(self, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir()
+        try:
+            (tmp_path / "link").symlink_to(real, target_is_directory=True)
+            (real / "alias.py").symlink_to(tmp_path / "elsewhere.py")
+        except OSError:
+            pytest.skip("symlinks need extra rights here")
+        handler = SyncHandler(tmp_path / "link", tmp_path / "dest")
+        # The event names the file by its real folder; the file itself must not be followed to its target.
+        assert handler._relative(real.resolve() / "alias.py") == Path("alias.py")
 
     def test_is_temporary_file_tmp_in_middle(self, tmp_path):
         """Files with .tmp. in the middle are temporary."""

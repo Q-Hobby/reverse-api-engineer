@@ -2,6 +2,7 @@
 
 from io import StringIO
 
+import pytest
 from rich.console import Console
 
 from reverse_api.tui import (
@@ -352,24 +353,34 @@ class TestAgentTextIsNotMarkup:
     def _console(self):
         return Console(file=StringIO(), no_color=True, width=200)
 
-    def test_claude_ui(self):
-        from reverse_api.tui import print_session_header
-
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda ui, t: ui.thinking(t),
+            lambda ui, t: ui.progress(t),
+            lambda ui, t: ui.tool_start("Bash", {"command": t}),
+            lambda ui, t: ui.tool_start("mcp__chrome-devtools__navigate_page", {"url": t}),
+            lambda ui, t: ui.tool_result("Bash", output=t),
+            lambda ui, t: ui.tool_result("mcp__chrome-devtools__list_network_requests", output=f"{t}\n{t}"),
+            lambda ui, t: ui.tool_result("Read", is_error=True, output=t),
+            lambda ui, t: ui.todo_updated([{"content": t, "status": "pending"}]),
+            lambda ui, t: ui.success(t, t),
+            lambda ui, t: ui.error(t),
+        ],
+    )
+    def test_claude_ui(self, call):
         console = self._console()
         ui = ClaudeUI(verbose=True)
         ui.console = console
-        ui.thinking(self.TRICKY)
-        ui.progress(self.TRICKY)
-        ui.tool_start("Bash", {"command": self.TRICKY})
-        ui.tool_start("mcp__chrome-devtools__navigate_page", {"url": self.TRICKY})
-        ui.tool_result("Bash", output=self.TRICKY)
-        ui.tool_result("mcp__chrome-devtools__list_network_requests", output=f"{self.TRICKY}\n{self.TRICKY}")
-        ui.tool_result("Read", is_error=True, output=self.TRICKY)
-        ui.todo_updated([{"content": self.TRICKY, "status": "pending"}])
-        ui.success(self.TRICKY, self.TRICKY)
-        ui.error(self.TRICKY)
+        call(ui, self.TRICKY)
+        assert self.TRICKY in console.file.getvalue()
+
+    def test_session_header(self):
+        from reverse_api.tui import print_session_header
+
+        console = self._console()
         print_session_header(console, "run1", self.TRICKY)
-        assert console.file.getvalue().count(self.TRICKY) >= 10
+        assert self.TRICKY in console.file.getvalue()
 
     def test_opencode_ui(self):
         from reverse_api.opencode_ui import OpenCodeUI

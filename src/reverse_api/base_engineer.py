@@ -90,6 +90,11 @@ class BaseEngineer(ABC):
             if self.on_session is not None:
                 self.on_session(sid)
 
+    def _report_usage(self) -> None:
+        """Gives the session the run's tokens and cost; the classic output prints its own summary."""
+        if getattr(self.ui, "shows_tool_results", False):
+            self.ui.usage(self.usage_metadata)
+
     async def _opening_message(self, brief: str) -> str | None:
         """The first message of the run: its brief, or when resuming, the user's next message."""
         message = await self._prompt_follow_up() if self.resume_session else brief

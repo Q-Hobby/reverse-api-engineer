@@ -18,7 +18,7 @@ def tool_output_text(result: Any) -> str | None:
         text = result.get("textResultForLlm") or result.get("text_result_for_llm")
         return str(text) if text else None
     text = getattr(result, "text_result_for_llm", None)
-    return str(text) if text else str(result)
+    return str(text) if text else None
 
 
 class CopilotEngineer(BaseEngineer):
@@ -118,6 +118,7 @@ class CopilotEngineer(BaseEngineer):
                         self.usage_metadata[key] = self.usage_metadata.get(key, 0) + value
             elif kind == "session.error":
                 errors.append(str(getattr(data, "message", "") or "Copilot session error"))
+                loop.call_soon_threadsafe(done.set)  # an error need not be followed by idle
             elif kind == "session.compaction_start":
                 self.ui.console.print("  [dim]session compacting...[/dim]")
             elif kind == "session.compaction_complete":
@@ -189,6 +190,7 @@ class CopilotEngineer(BaseEngineer):
 
             # GitHub subscription: cost is $0 (included in Copilot subscription)
             self.usage_metadata["estimated_cost_usd"] = 0.0
+            self._report_usage()
 
             # Display usage if available
             input_tokens = self.usage_metadata.get("input_tokens", 0)

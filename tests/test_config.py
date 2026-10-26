@@ -179,3 +179,18 @@ class TestDefaultConfig:
         assert DEFAULT_CONFIG["opencode_npx_package"] == "opencode-ai@latest"
         assert DEFAULT_CONFIG["ollama_auto_start"] is True
         assert DEFAULT_CONFIG["ollama_base_url"] == "http://127.0.0.1:11434"
+
+
+
+def test_effort_defaults_to_each_models_own():
+    from reverse_api.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["claude_effort"] is None
+
+
+def test_list_defaults_are_not_shared_between_configs(tmp_path):
+    from reverse_api.config import ConfigManager
+
+    first = ConfigManager(tmp_path / "a.json")
+    first.config["claude_setting_sources"].append("user")
+    assert ConfigManager(tmp_path / "b.json").config["claude_setting_sources"] == []

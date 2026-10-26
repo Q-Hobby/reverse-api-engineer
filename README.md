@@ -130,7 +130,7 @@ Settings live in `~/.reverse-api/config.json` and can be edited via `/settings` 
 - `/settings`: SDK, agent provider, output and sync settings.
 - `/history`: past runs, with their details, messages, and re-engineer or resume.
 - `/messages [run_id]`: what the agent did in a run.
-- `/resume [run_id]`: continue a past run's conversation where it stopped, on any SDK. Works for runs started from this version on.
+- `/resume [run_id]`: continue a past run's conversation where it stopped, on any SDK. Works for runs that saved their SDK session: agent and engineer runs from this version on. Collector runs cannot be resumed.
 - `/output` (ctrl+o): everything from the session, unfolded. `/open`: the latest client.
 - `/new`, `/clear`, `/help`, `/exit`.
 

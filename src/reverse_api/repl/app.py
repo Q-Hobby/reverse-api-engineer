@@ -143,7 +143,11 @@ class Session:
         self.real_out, self.real_err = sys.stdout, sys.stderr
         self.classic_job: Callable[[], None] | None = None
         self.first: tuple[str, Callable[[], Any]] | None = None  # a run a subcommand handed over
+        # Per mode, how a subcommand's options (--headless, --output-dir...) start each prompt: runner(prompt, model).
+        self.runners: dict[str, Callable[[str, str | None], Any]] = {}
+        self.worker: threading.Thread | None = None
         self.update_checked = False
+        self.buf.on_text_changed += self._reset_palette
         # Stray prints read as notices: dim and indented like the rest of the ledger.
         self.capture = TranscriptWriter(self._captured, plain_style=f"fg:{DIM}", indent="   ")
 
@@ -152,6 +156,9 @@ class Session:
     def invalidate(self) -> None:
         if self.app is not None:
             self.app.invalidate()
+
+    def _reset_palette(self, _buf: Buffer) -> None:
+        self.st.palette_index = 0  # typing narrows the menu, so the first match is the one enter runs
 
     def _captured(self, raw: Raw) -> None:
         self.view.out(raw)
@@ -182,7 +189,9 @@ class Session:
                     elif not fut.done():
                         fut.set_result(value or "")
 
-                self.st.picker = Picker(str(spec.get("question", "")), items, None, picked, question=True)
+                multi = bool(spec.get("multi"))
+                title = str(spec.get("question", "")) + (" · space picks several, enter sends" if multi else "")
+                self.st.picker = Picker(title, items, None, picked, question=True, multi=multi)
             else:
                 self.st.question = fut
             self.invalidate()
@@ -205,8 +214,19 @@ class Session:
             answer = self.buf.text.strip()
             self.buf.reset()
             p.on_pick(answer)
+        elif p.multi and p.chosen:
+            p.on_pick(", ".join(value for value, _, _ in p.items if value in p.chosen))
         else:
             p.on_pick(p.items[p.index][0])
+
+    def toggle(self) -> None:
+        """Space on a several-answers question: adds or removes the highlighted option."""
+        p = self.st.picker
+        if p is None or not p.multi:
+            return
+        value = p.items[p.index][0]
+        if value:
+            p.chosen.remove(value) if value in p.chosen else p.chosen.append(value)
 
     def open_picker(self, title: str, items: list[tuple[str, str, str]], current: str | None, on_pick: Callable[[str | None], None]) -> None:
         index = next((i for i, (v, _, _) in enumerate(items) if v == current), 0)
@@ -218,7 +238,7 @@ class Session:
         old = self.st.model_label
         self.st.model = value
         self.cli.config_manager.set("claude_code_model", value)
-        self.view.event("model", old, self.st.model_label)
+        self.view.event("model", old, self.st.model_label, "from the next run" if self.st.run_open else "")
 
     def set_effort(self, value: str | None) -> None:
         if not value or value == self.st.effort_label:
@@ -226,7 +246,7 @@ class Session:
         old = self.st.effort_label
         self.st.effort = value
         self.cli.config_manager.set("claude_effort", value)
-        self.view.event("effort", old, value)
+        self.view.event("effort", old, value, "from the next run" if self.st.run_open else "")
 
     def set_mode(self, value: str | None) -> None:
         if value and value != self.st.mode:
@@ -267,6 +287,8 @@ class Session:
                 from ..tui import get_model_choices
 
                 choices = [(c["value"], model_label(c["value"]), c["name"].split("[")[-1].rstrip("]").lower()) for c in get_model_choices()]
+                if st.model and st.model not in [value for value, _, _ in choices]:
+                    choices.insert(0, (st.model, model_label(st.model), "current"))  # e.g. the Sonnet 4.6 default
                 self.open_picker("choose a model", choices, st.model, self.set_model)
         elif cmd == "/effort" and not st.has_effort:
             view.command(cmd)
@@ -447,7 +469,10 @@ class Session:
         mode = mode or self.st.mode
         model = self.st.model if self.st.sdk == "claude" else None
         run: Callable[[], Any]
-        if mode == "manual":
+        runner = self.runners.get(mode)
+        if runner is not None:
+            run = lambda: runner(prompt, model)  # noqa: E731
+        elif mode == "manual":
             run = lambda: cli.run_manual_capture(prompt=prompt, url=None, reverse_engineer=True, model=model)  # noqa: E731
         elif mode == "collector":
             run = lambda: cli.run_collector(prompt=prompt, model=None)  # noqa: E731
@@ -506,12 +531,15 @@ class Session:
             result: Any = None
             try:
                 result = fn()
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                result = {"error": "interrupted"}
             except BaseException as exc:  # noqa: BLE001  # the engine thread must never take the app down
                 self.view.error(str(exc) or type(exc).__name__)
             finally:
                 self.finish(result)
 
-        threading.Thread(target=target, name="rae-run", daemon=True).start()
+        self.worker = threading.Thread(target=target, name="rae-run", daemon=True)
+        self.worker.start()
 
     def end_run(self) -> None:
         """End a run that waits for a follow-up. It stays busy until its worker has wrapped up,
@@ -533,13 +561,23 @@ class Session:
                 self.view.interrupted()
             else:
                 self.view.error(str(result["error"]))
-        st.running = st.waiting = False
         self.bridge.task = None
         while not self.bridge.follow_ups.empty():
             self.bridge.follow_ups.get_nowait()
-        if st.queue:
-            nxt = st.queue.pop(0)
-            self.call_soon(lambda: self.start(nxt))
+        st.run_model = st.run_sdk = st.run_effort = None
+        # Take the queued prompt before going idle: a prompt typed in between would otherwise start
+        # its own run alongside it.
+        nxt = st.queue.pop(0) if st.queue else None
+        st.waiting = False
+        if nxt is None:
+            st.running = False
+        else:
+
+            def start_next() -> None:
+                st.running = False  # on the app's thread, so nothing can slip in before the queued prompt
+                self.start(nxt)
+
+            self.call_soon(start_next)
         self.invalidate()
 
     def classic(self, fn: Callable[[], Any], then: Callable[[], None] | None = None, pause: bool = True) -> None:
@@ -599,6 +637,13 @@ class Session:
         job, self.classic_job = self.classic_job, None
         return job
 
+    def wait_for_run(self, timeout: float = 60) -> None:
+        """After quitting: let a stopped run close its SDK session, sync its files and save its history."""
+        worker = self.worker
+        if worker is not None and worker.is_alive():
+            print(" stopping the run…", file=self.real_err, flush=True)
+            worker.join(timeout)
+
     def quit(self) -> None:
         self.classic_job = None
         if self.st.running:
@@ -637,7 +682,10 @@ class Session:
             p = st.picker
             if p is None:
                 return FormattedText([])
-            rows = [(label, desc, i == p.index, value == p.current) for i, (value, label, desc) in enumerate(p.items)]
+            rows = [
+                ((("◉ " if value in p.chosen else "○ ") if p.multi and value else "") + label, desc, i == p.index, value == p.current)
+                for i, (value, label, desc) in enumerate(p.items)
+            ]
             return view.menu(rows, title=p.title)
 
         transcript_window: Window = Window(wrap_lines=False)
@@ -717,6 +765,10 @@ class Session:
         @kb.add("down", filter=palette_open)
         def _(event: KeyPressEvent) -> None:
             st.palette_index = min(len(self.palette_items()) - 1, st.palette_index + 1)
+
+        @kb.add("space", filter=picker_open & Condition(lambda: bool(st.picker and st.picker.multi) and not buf.text))
+        def _(event: KeyPressEvent) -> None:
+            self.toggle()
 
         @kb.add("up", filter=picker_open)
         def _(event: KeyPressEvent) -> None:
@@ -820,16 +872,24 @@ class Session:
             console.print(renderable)
 
 
-def run_session(mode: str = "agent", model: str | None = None, first: tuple[str, Callable[[], Any]] | None = None) -> None:
+def run_session(
+    mode: str = "agent",
+    model: str | None = None,
+    first: tuple[str, Callable[[], Any]] | None = None,
+    runner: Callable[[str, str | None], Any] | None = None,
+) -> None:
     """Entry point for the interactive CLI: full screen, with stretches in the plain terminal for classic screens.
 
-    ``first`` is a prompt and its run, with every option already bound, that a subcommand hands over.
+    A subcommand hands over its options: ``first`` is its prompt and run, with every option bound, and
+    ``runner(prompt, model)`` starts the prompts typed later in ``mode`` with the options that still apply.
     """
     session = Session()
     session.st.mode = mode
     if model:
         session.st.model = model
     session.first = first
+    if runner is not None:
+        session.runners[mode] = runner
     try:
         while True:
             asyncio.run(session.run())
@@ -839,4 +899,5 @@ def run_session(mode: str = "agent", model: str | None = None, first: tuple[str,
             job()
     except KeyboardInterrupt:
         pass
+    session.wait_for_run()
     session.print_transcript()

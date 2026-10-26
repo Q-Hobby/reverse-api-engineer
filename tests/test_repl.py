@@ -1,12 +1,14 @@
 """Tests for the full-screen session: tool events to ledger entries, follow-ups, transcript capture, the bar."""
 
 import asyncio
+import io
 import threading
 from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from rich.console import Console
 
 from reverse_api.repl import bridge as bridge_mod
 from reverse_api.repl.bridge import Bridge, LedgerUI, describe, short_name
@@ -95,6 +97,7 @@ class TestLedgerUI:
         client = tmp_path / "api_client.py"
         client.write_text("a\nb\nc\n", encoding="utf-8")
         ui.tool_start("mcp__verification__report_client_verified", {"summary": "listed 12 jobs"})
+        ui.tool_result("mcp__verification__report_client_verified", output="Recorded")
         ui.success(str(client))
         assert "ready" not in plain(t)
         ui.usage({"input_tokens": 1000, "output_tokens": 200, "estimated_cost_usd": 0.12})
@@ -854,10 +857,18 @@ class TestSubcommands:
         monkeypatch.setattr(cli, "_in_terminal", lambda: True)
         with patch.object(cli, "open_session") as session, patch.object(cli, "run_agent_capture") as capture:
             CliRunner().invoke(cli.main, ["agent", "-p", "jobs", "-u", "https://example.com", "--headless"])
-            mode, model, prompt, run = session.call_args.args
+            mode, model, prompt, run, runner = session.call_args.args
             run()
+            runner("later task", "claude-opus-5-5")
         assert (mode, model, prompt) == ("agent", None, "jobs")
-        capture.assert_called_once_with(prompt="jobs", url="https://example.com", model=None, output_dir=None, headless=True)
+        assert capture.call_args_list[0].kwargs == {
+            "prompt": "jobs",
+            "url": "https://example.com",
+            "model": None,
+            "output_dir": None,
+            "headless": True,
+        }
+        assert capture.call_args_list[1].kwargs == {"prompt": "later task", "model": "claude-opus-5-5", "output_dir": None, "headless": True}
 
     def test_without_a_terminal_a_prompt_is_required(self, monkeypatch):
         from click.testing import CliRunner
@@ -911,3 +922,158 @@ def test_tiny_costs_read_as_under_a_cent(session):
     assert (money(0.004), money(0.0), money(0.07)) == ("<$0.01", "$0.00", "$0.07")
     st.cost = 0.004
     assert "<$0.01" in "".join(text for _, text in view.status())
+
+
+class TestReviewedSession:
+    def test_later_prompts_keep_the_subcommand_options(self, app_session):
+        session, _history = app_session
+        runner = MagicMock()
+        session.runners["agent"] = runner
+        with patch.object(session, "work") as work:
+            session.start("all jobs on example.com")
+            work.call_args.args[0]()
+        runner.assert_called_once_with("all jobs on example.com", "claude-sonnet-5-5")
+
+    def test_a_resumed_run_does_not_change_the_next_runs_model(self, session):
+        st, _t, view, b = session
+        LedgerUI(b).header("r1", "p", model="gpt-5", sdk="copilot")
+        assert st.model == "claude-sonnet-5-5" and st.live_model_label == "gpt-5" and st.run_effort is None
+        assert "gpt-5" in "".join(text for _, text in view.seam())
+
+    def test_finishing_clears_the_runs_own_model(self, app_session):
+        session, _history = app_session
+        LedgerUI(session.bridge).header("r1", "p", model="gpt-5", sdk="copilot")
+        session.finish(None)
+        assert session.st.run_model is None and session.st.live_model_label == "sonnet 5.5"
+
+    def test_a_model_change_mid_run_says_it_waits_for_the_next_run(self, app_session):
+        session, _history = app_session
+        session.st.waiting = True
+        session.set_model("claude-opus-5-5")
+        assert "from the next run" in plain(session.transcript)
+
+    def test_the_model_picker_keeps_a_current_model_that_left_the_list(self, app_session):
+        session, _history = app_session
+        session.st.model = "claude-sonnet-4-6"
+        session.run_command("/model")
+        assert session.st.picker.items[0][0] == "claude-sonnet-4-6" and session.st.picker.index == 0
+
+    def test_quitting_waits_for_the_run_to_wrap_up(self, app_session):
+        session, _history = app_session
+        session.worker = threading.Thread(target=lambda: __import__("time").sleep(0.3))
+        session.worker.start()
+        session.wait_for_run(timeout=5)
+        assert not session.worker.is_alive()
+
+    def test_a_stopped_engineer_run_reads_as_interrupted(self, app_session):
+        session, _history = app_session
+
+        def stopped():
+            raise asyncio.CancelledError
+
+        session.work(stopped)
+        session.worker.join(5)
+        text = plain(session.transcript)
+        assert "interrupted" in text and "CancelledError" not in text
+
+    def test_a_prompt_typed_while_finishing_waits_for_the_queued_one(self, app_session):
+        session, _history = app_session
+        session.loop = Loop()
+        session.st.running, session.st.queue = True, ["queued first"]
+        with patch.object(session, "start") as start:
+            session.finish(None)
+        start.assert_called_once_with("queued first")
+
+    def test_several_answers_are_sent_together(self, app_session):
+        session, _history = app_session
+        session.loop = Loop()
+        fut = session.ask_user({"question": "Which boards?", "options": [("openai", ""), ("anthropic", ""), ("ramp", "")], "multi": True})
+        picker = session.st.picker
+        assert picker.multi
+        session.toggle()
+        picker.index = 2
+        session.toggle()
+        session.choose()
+        assert fut.result() == "openai, ramp"
+
+    def test_typing_resets_the_command_menu_to_the_first_match(self, app_session):
+        session, _history = app_session
+        session.st.palette_index = 3
+        session.buf.text = "/mo"
+        assert session.st.palette_index == 0
+
+    def test_open_works_for_a_client_the_card_does_not_show(self, session, tmp_path):
+        st, t, _view, b = session
+        client = tmp_path / "api_client.py"
+        client.write_text("x = 1\n", encoding="utf-8")
+        LedgerUI(b).success(str(client))
+        assert st.last_client == client and "ready" not in plain(t)
+
+    def test_a_failed_verification_gets_no_card(self, session, tmp_path):
+        st, t, _view, b = session
+        client = tmp_path / "api_client.py"
+        client.write_text("x = 1\n", encoding="utf-8")
+        ui = LedgerUI(b)
+        ui.header("r1", "p", model="claude-sonnet-5-5")
+        ui.tool_start("mcp__verification__report_client_verified", {"summary": "ok"})
+        ui.tool_result("mcp__verification__report_client_verified", is_error=True, output="failed")
+        ui.success(str(client))
+        ui.usage({"input_tokens": 1, "output_tokens": 1, "estimated_cost_usd": 0.01})
+        assert "ready" not in plain(t)
+
+    def test_full_output_keeps_every_line_whole(self, session):
+        _st, t, _view, b = session
+        lines = [f"line {i} " + "x" * 300 for i in range(500)]
+        LedgerUI(b).tool_result("Bash", output="\n".join(lines))
+        console = Console(file=io.StringIO(), width=400, color_system=None)
+        for item in t.full:
+            console.print(item)
+        out = console.file.getvalue()
+        assert "line 499" in out and "x" * 300 in out
+
+    def test_usage_counts_other_sdks_cache_tokens(self, session):
+        st, _t, _view, b = session
+        LedgerUI(b).usage({"input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 100, "cache_write_tokens": 20})
+        assert st.tokens == 135
+
+    def test_blank_lines_from_prints_are_kept(self):
+        got: list[Raw] = []
+        writer = TranscriptWriter(got.append)
+        writer.write("a\n\nb\n")
+        writer.write("\n")
+        assert [len(r.lines) for r in got] == [3, 1]
+
+    def test_the_capture_has_no_file_descriptor(self):
+        with pytest.raises(io.UnsupportedOperation):
+            TranscriptWriter(lambda raw: None).fileno()
+
+    def test_dated_model_ids_get_no_adaptive_thinking(self):
+        from reverse_api.repl.bridge import adaptive_thinking
+
+        assert not adaptive_thinking("claude-sonnet-4-20250514") and not adaptive_thinking("claude-opus-4-1")
+        assert adaptive_thinking("claude-sonnet-4-6") and adaptive_thinking("claude-opus-5-5")
+
+    def test_links_with_brackets_stay_whole(self, session):
+        from reverse_api.repl.view import link
+
+        _st, t, view, _b = session
+        view.out(link("jobs", "https://example.com/jobs?filter[status]=open"))
+        assert "jobs" in plain(t) and "]=open" not in plain(t)
+
+    def test_reasoning_keeps_dunder_names(self):
+        from reverse_api.repl.view import strip_markdown
+
+        assert strip_markdown("**Plan** call __init__ in my_module") == "Plan call __init__ in my_module"
+
+    def test_history_shows_tiny_costs_as_under_a_cent(self):
+        from reverse_api.repl.view import run_summary
+
+        assert run_summary({"timestamp": "2026-10-26T10:00", "prompt": "p", "usage": {"estimated_cost_usd": 0.002}}).endswith("<$0.01")
+
+    def test_width_is_the_real_terminal_width(self, monkeypatch):
+        import os
+
+        from reverse_api.repl import style
+
+        monkeypatch.setattr(style.shutil, "get_terminal_size", lambda *a, **k: os.terminal_size((30, 10)))
+        assert style.width() == 30

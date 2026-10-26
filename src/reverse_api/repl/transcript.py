@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import sys
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -114,8 +113,6 @@ def raw_lines(text: str, plain_style: str = "", indent: str = "") -> Raw:
                 lines.append([("", indent)] if indent else [])
             if part:
                 lines[-1].append((style or plain_style, part))
-    if lines and not lines[-1]:
-        lines.pop()
     return Raw(lines, text)
 
 
@@ -141,7 +138,8 @@ class TranscriptWriter(io.TextIOBase):
         return False
 
     def fileno(self) -> int:
-        return sys.__stdout__.fileno() if sys.__stdout__ else 1
+        # No descriptor: a subprocess handed the real one would draw over the full-screen app.
+        raise io.UnsupportedOperation("the session's output is not a file descriptor")
 
     def write(self, s: str) -> int:
         with self._lock:

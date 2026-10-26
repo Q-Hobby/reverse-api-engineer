@@ -456,6 +456,7 @@ class CursorEngineer(BaseEngineer):
                 script_path = str(self.scripts_dir / self._get_client_filename())
                 local_path = str(self.local_scripts_dir / self._get_client_filename()) if self.local_scripts_dir else None
                 self.ui.success(script_path, local_path)
+                self._report_usage()
 
                 self.usage_metadata.setdefault("estimated_cost_usd", 0.0)
                 self.ui.console.print("  [dim]Usage (Cursor SDK): see dashboard — token counts are best-effort[/dim]")
@@ -601,6 +602,7 @@ class CursorAutoEngineer(CursorEngineer):
                 script_path = str(self.scripts_dir / self._get_client_filename())
                 local_path = str(self.local_scripts_dir / self._get_client_filename()) if self.local_scripts_dir else None
                 self.ui.success(script_path, local_path)
+                self._report_usage()
                 self.usage_metadata.setdefault("estimated_cost_usd", 0.0)
 
                 last_result = {"script_path": script_path, "usage": self.usage_metadata}

@@ -167,7 +167,8 @@ class Bridge:
                     options.append((str(label), str(desc or "")))
             self.view.question(text)
             self.invalidate()
-            answer = await asyncio.wrap_future(self.ask_user({"question": text, "options": options}))
+            spec = {"question": text, "options": options, "multi": bool(get("multiSelect", False))}
+            answer = await asyncio.wrap_future(self.ask_user(spec))
             answers[text] = answer or ""
             self.view.answer(answer or "skipped")
             self.invalidate()
@@ -202,8 +203,9 @@ class LedgerUI:
         st.running, st.waiting, st.verb, st.kind = True, False, "starting", "other"
         self.b.cost_base = st.cost
         self.b.verified = False
-        if model:
-            st.model = model
+        # The run's own model and SDK; the selection in st.model stays for the next run.
+        st.run_model, st.run_sdk = model or st.model, sdk or st.sdk
+        st.run_effort = st.effort_label if st.run_sdk == "claude" and not (st.run_model or "").startswith("claude-haiku-4") else None
         self.view.run_line(run_id, mode)
         self._changed()
 
@@ -224,8 +226,6 @@ class LedgerUI:
         if found is None:
             return
         verb, target, kind, url, path = found
-        if name == "report_client_verified":
-            self.b.verified = True
         st = self.st
         st.kind = kind
         st.verb = "reading traffic" if verb in ("network", "request") else KIND_VERB.get(kind, "thinking")
@@ -247,10 +247,12 @@ class LedgerUI:
         name = short_name(tool_name)
         if name in HIDDEN_TOOLS:
             return
+        if name == "report_client_verified" and not is_error:
+            self.b.verified = True  # the card promises a client that ran, so only a confirmed report counts
         text = str(output or "").strip()
         lines = text.splitlines()
         if is_error:
-            self.view.receipt(lines[:60] or ["failed"], error=True)
+            self.view.receipt(lines or ["failed"], error=True)
         elif name in QUIET_RESULTS:
             return
         elif name in LOOK_TOOLS:
@@ -258,7 +260,7 @@ class LedgerUI:
         elif name == "Read":
             self.view.receipt([f"{len(lines)} lines"])
         else:
-            self.view.receipt(lines[:400])
+            self.view.receipt(lines)
         self._changed()
 
     def todo_updated(self, todos: list) -> None:
@@ -303,13 +305,17 @@ class LedgerUI:
 
     def success(self, script_path: str, local_path: str | None = None) -> None:
         _ = local_path
+        path = Path(script_path)
+        if path.exists():
+            self.st.last_client = path  # /open works for any client, verified or not
         # The card promises a working client, so it waits for the agent to have verified one.
-        self.b.pending_card = Path(script_path) if self.b.verified else None
+        self.b.pending_card = path if self.b.verified else None
         self._changed()
 
     def usage(self, usage: dict[str, Any]) -> None:
         st = self.st
-        keys = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        # Claude's names, then Copilot's and Cursor's for their cache.
+        keys = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "cache_read_tokens", "cache_write_tokens")
         st.tokens = sum(int(usage.get(key, 0) or 0) for key in keys)
         cost = usage.get("estimated_cost_usd")
         if isinstance(cost, (int, float)):
@@ -353,7 +359,7 @@ _bridge: Bridge | None = None
 
 def adaptive_thinking(model: str | None) -> bool:
     """Adaptive thinking exists from the 4.6 models on, and not on Haiku 4.5; unknown names get none."""
-    m = re.match(r"claude-(opus|sonnet|haiku|fable)-(\d+)-(\d+)", model or "")
+    m = re.match(r"claude-(opus|sonnet|haiku|fable)-(\d+)-(\d{1,2})(?!\d)", model or "")
     if m is None:
         return False
     return (int(m.group(2)), int(m.group(3))) >= (4, 6) and not (m.group(1) == "haiku" and m.group(2) == "4")

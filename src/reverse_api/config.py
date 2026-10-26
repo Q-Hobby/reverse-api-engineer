@@ -1,5 +1,6 @@
 """Configuration management for reverse-api."""
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # [] isolates the agent from the user's own CLAUDE.md, hooks, plugins and MCP servers.
     "claude_setting_sources": [],
     # Effort for Claude agent, engineer and collector sessions: "low" | "medium" | "high" | "xhigh" | "max".
-    # None keeps each model's default (Opus 5.5 defaults to "medium", the others to "high").
+    # None keeps each model's default (Opus 5.5 and Haiku 5.5 default to "medium", the others to "high").
     "claude_effort": None,
     "collector_model": "claude-sonnet-4-6",  # Model for collector mode
     "cursor_model": "composer-2.5",  # Model id for Cursor SDK (see Cursor.models.list())
@@ -45,7 +46,7 @@ class ConfigManager:
 
     def __init__(self, config_path: Path) -> None:
         self.config_path = config_path
-        self.config = DEFAULT_CONFIG.copy()
+        self.config = copy.deepcopy(DEFAULT_CONFIG)  # list defaults must not be shared between instances
         self.load()
 
     def load(self) -> None:

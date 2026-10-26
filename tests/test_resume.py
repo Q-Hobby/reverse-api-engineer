@@ -295,3 +295,57 @@ def test_opencode_resume_runs_in_the_classic_screen(monkeypatch):
     work.assert_not_called()
     session.app.exit.assert_called_once()
     assert session.take_classic_job() is not None
+
+
+class TestReviewedEdges:
+    def test_an_empty_tool_result_shows_nothing(self):
+        from reverse_api.copilot_engineer import tool_output_text
+
+        assert tool_output_text(MagicMock(text_result_for_llm="")) is None
+
+    @pytest.mark.asyncio
+    async def test_a_copilot_error_ends_the_wait_without_idle(self, har_path, tmp_path):
+        import asyncio
+        from types import SimpleNamespace
+
+        eng = TestCopilot()._eng(har_path, tmp_path)
+        done, errors = asyncio.Event(), []
+        eng._event_handler(done, errors)(SimpleNamespace(type=SimpleNamespace(value="session.error"), data=SimpleNamespace(message="quota")))
+        await asyncio.sleep(0)
+        assert done.is_set() and errors == ["quota"]
+
+    def test_opencode_sessions_keep_their_provider(self, monkeypatch):
+        history, config = MagicMock(), MagicMock()
+        config.get.side_effect = lambda key, default=None: {"opencode_provider": "opencode"}.get(key, default)
+        monkeypatch.setattr(cli, "session_manager", history)
+        monkeypatch.setattr(cli, "config_manager", config)
+        cli._session_recorder("r1", "agent", "opencode", "big-pickle", None)("ses_1")
+        assert history.update_run.call_args.kwargs["sdk_session"]["provider"] == "opencode"
+        assert cli._session_provider({"sdk_session": {"id": "s", "provider": "opencode"}}) == "opencode"
+        assert cli._session_provider(None) is None
+
+    def test_tool_results_are_logged_for_messages_without_the_session(self, har_path, tmp_path):
+        from claude_agent_sdk.types import ToolResultBlock
+
+        eng = _cursor(har_path, tmp_path)  # any engine with a message store
+        from reverse_api.engineer import ClaudeEngineer
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path / "scripts"), patch("reverse_api.base_engineer.MessageStore"):
+            eng = ClaudeEngineer(run_id="r1", har_path=har_path, prompt="p", output_dir=str(tmp_path))
+        eng._tool_names["t1"] = "Bash"
+        eng.ui = MagicMock(shows_tool_results=False)
+        eng._record_tool_results([ToolResultBlock(tool_use_id="t1", content="12 jobs", is_error=False)])
+        eng.message_store.save_tool_result.assert_called_once_with("Bash", False, "12 jobs")
+        eng.ui.tool_result.assert_not_called()
+
+    def test_format_error_is_valid_markup_with_literal_exception_text(self):
+        from io import StringIO
+
+        from rich.console import Console
+
+        from reverse_api.opencode_engineer import format_error
+
+        console = Console(file=StringIO(), no_color=True, width=200)
+        console.print(format_error(ValueError("bad [bold]x[/] [/oops]")))
+        out = console.file.getvalue()
+        assert "bad [bold]x[/] [/oops]" in out and "[bold red]" not in out

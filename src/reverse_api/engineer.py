@@ -180,6 +180,21 @@ class ClaudeEngineer(BaseEngineer):
             else:
                 self.usage_metadata[key] = value
 
+    def _record_tool_results(self, blocks: list[Any]) -> None:
+        """Tool results come back in user messages: always logged for /messages, shown by the session."""
+        for block in blocks:
+            if isinstance(block, ToolResultBlock):
+                output = block.content
+                text = (
+                    "\n".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in output)
+                    if isinstance(output, list)
+                    else str(output or "")
+                )
+                name = self._tool_names.get(block.tool_use_id, "Tool")
+                self.message_store.save_tool_result(name, bool(block.is_error), text[:20000])
+                if getattr(self.ui, "shows_tool_results", False):
+                    self.ui.tool_result(name, bool(block.is_error), text)
+
     async def _process_streaming_response(self, client: ClaudeSDKClient) -> dict[str, Any] | None:
         """Process a single streaming response from the SDK client.
 
@@ -246,16 +261,8 @@ class ClaudeEngineer(BaseEngineer):
                     elif isinstance(block, ThinkingBlock) and (thinking_note := getattr(self.ui, "thinking_note", None)):
                         thinking_note(block.thinking)
 
-            elif isinstance(message, UserMessage) and getattr(self.ui, "shows_tool_results", False) and isinstance(message.content, list):
-                for block in message.content:
-                    if isinstance(block, ToolResultBlock):
-                        output = block.content
-                        text = (
-                            "\n".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in output)
-                            if isinstance(output, list)
-                            else str(output or "")
-                        )
-                        self.ui.tool_result(self._tool_names.get(block.tool_use_id, "Tool"), bool(block.is_error), text)
+            elif isinstance(message, UserMessage) and isinstance(message.content, list):
+                self._record_tool_results(message.content)
 
             elif isinstance(message, ResultMessage):
                 if message.is_error:

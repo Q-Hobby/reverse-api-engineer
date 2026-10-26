@@ -788,11 +788,21 @@ def _in_terminal() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def open_session(mode: str = "agent", model: str | None = None, prompt: str | None = None, run: Callable[[], Any] | None = None) -> None:
-    """The interactive CLI: the full-screen session, in ``mode``, starting ``run`` for ``prompt`` when a subcommand hands one over."""
+def open_session(
+    mode: str = "agent",
+    model: str | None = None,
+    prompt: str | None = None,
+    run: Callable[[], Any] | None = None,
+    runner: Callable[[str, str | None], Any] | None = None,
+) -> None:
+    """The interactive CLI: the full-screen session, in ``mode``.
+
+    A subcommand hands over ``run``, its ``prompt`` with every option bound, and ``runner(prompt, model)``,
+    which starts later prompts in that mode with the options that still apply, such as --headless.
+    """
     from .repl.app import run_session
 
-    run_session(mode=mode, model=model, first=(prompt, run) if prompt and run else None)
+    run_session(mode=mode, model=model, first=(prompt, run) if prompt and run else None, runner=runner)
 
 
 def handle_settings(mode_color: str = THEME_PRIMARY) -> None:
@@ -1237,6 +1247,8 @@ def agent(
             model,
             prompt,
             lambda: run_agent_capture(prompt=prompt, url=url, model=model, output_dir=output_dir, headless=headless),
+            # --url belongs to the first task; the other options stay for the session.
+            lambda p, m: run_agent_capture(prompt=p, model=m or model, output_dir=output_dir, headless=headless),
         )
         return
     if not (prompt and prompt.strip()):
@@ -1312,7 +1324,13 @@ Examples:
 def collector(prompt: str | None, model: str | None, output_dir: str | None) -> None:
     """Run AI-powered data collection."""
     if _in_terminal():
-        open_session("collector", model, prompt, lambda: run_collector(prompt=prompt, model=model, output_dir=output_dir))
+        open_session(
+            "collector",
+            model,
+            prompt,
+            lambda: run_collector(prompt=prompt, model=model, output_dir=output_dir),
+            lambda p, m: run_collector(prompt=p, model=m or model, output_dir=output_dir),
+        )
         return
     if not prompt:
         click.echo("error: --prompt is required outside a terminal", err=True)
@@ -1583,7 +1601,7 @@ def run_auto_capture(
                 prompt=prompt,
                 output_dir=output_dir,
                 agent_provider=agent_provider,
-                opencode_provider=config_manager.get("opencode_provider", DEFAULT_OPENCODE_PROVIDER),
+                opencode_provider=_session_provider(resume) or config_manager.get("opencode_provider", DEFAULT_OPENCODE_PROVIDER),
                 opencode_model=model or config_manager.get("opencode_model", DEFAULT_OPENCODE_MODEL),
                 enable_sync=config_manager.get("real_time_sync", False),
                 sdk=sdk,
@@ -1959,7 +1977,7 @@ def run_engineer(
             model=model,
             output_dir=output_dir,
             sdk=sdk,
-            opencode_provider=config_manager.get("opencode_provider", DEFAULT_OPENCODE_PROVIDER),
+            opencode_provider=_session_provider(resume) or config_manager.get("opencode_provider", DEFAULT_OPENCODE_PROVIDER),
             opencode_model=session_model,
             enable_sync=enable_sync,
             additional_instructions=additional_instructions,
@@ -2102,6 +2120,11 @@ def _session_sdk(resume: dict[str, Any] | None) -> str | None:
     return str(resume["sdk_session"].get("sdk") or "claude")
 
 
+def _session_provider(resume: dict[str, Any] | None) -> str | None:
+    """The OpenCode provider a resumed session ran with; its saved model only exists there."""
+    return str((resume or {}).get("sdk_session", {}).get("provider") or "") or None
+
+
 def _resume_point(resume: dict[str, Any]) -> tuple[str, float]:
     """The session to reopen and what that session (not the whole run) had cost so far."""
     session = resume["sdk_session"]
@@ -2119,6 +2142,8 @@ def _session_recorder(
     workspace the SDK filed the session under.
     """
     session = {"mode": mode, "sdk": sdk, "model": model, "output_dir": str(get_base_output_dir(output_dir).resolve()), "output_mode": output_mode}
+    if sdk == "opencode":
+        session["provider"] = config_manager.get("opencode_provider", DEFAULT_OPENCODE_PROVIDER)
     return lambda sid: session_manager.update_run(run_id=run_id, sdk_session={**session, "id": sid, "cost": 0.0})
 
 

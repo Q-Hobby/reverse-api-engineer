@@ -62,7 +62,8 @@ class SyncHandler(FileSystemEventHandler):
         try:
             return path.relative_to(self.source_dir)
         except ValueError:
-            return path.resolve().relative_to(self.source_dir.resolve())
+            # Only the folders: a file that is itself a symlink stays the link, not its target.
+            return (path.parent.resolve() / path.name).relative_to(self.source_dir.resolve())
 
     def _is_ignored_file(self, file_path: str) -> bool:
         """Check if a file should be ignored during sync."""

@@ -137,7 +137,8 @@ def terminal_safe(text: str) -> str:
 
 def strip_markdown(text: str) -> str:
     """Thinking summaries come as light Markdown; a margin note shows them as plain text."""
-    return re.sub(r"(\*\*|__|`|^#+\s+|^\s*[-*]\s+(?=\S))", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*(\S(?:.*?\S)?)\*\*", r"\1", text)  # only ** bold: __ is too often part of a name
+    return re.sub(r"(`|^#+\s+|^\s*[-*]\s+(?=\S))", "", text, flags=re.MULTILINE)
 
 
 def first_words(text: str, limit: int) -> str:
@@ -156,7 +157,7 @@ def run_summary(run: dict[str, Any]) -> str:
     prompt = " ".join(str(run.get("prompt") or "").split())
     prompt = prompt if len(prompt) <= 44 else prompt[:43] + "…"
     cost = (run.get("usage") or {}).get("estimated_cost_usd") or 0
-    return f"{when}  {prompt:<44}  " + (f"${cost:.2f}" if cost else "")
+    return f"{when}  {prompt:<44}  " + (money(cost) if cost else "")
 
 
 def link(text: str, target: Path | str) -> str:
@@ -165,7 +166,7 @@ def link(text: str, target: Path | str) -> str:
         if not target.is_absolute():
             return escape(text)
         target = target.as_uri()
-    return f"[link={target}]{escape(text)}[/link]"
+    return f"[link={target.replace('[', '%5B').replace(']', '%5D')}]{escape(text)}[/link]"
 
 
 @dataclass
@@ -176,6 +177,8 @@ class Picker:
     on_pick: Callable[[str | None], None]
     index: int = 0
     question: bool = False  # an agent question, which ends with its run
+    multi: bool = False  # several options can be chosen, with space, before enter sends them
+    chosen: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -202,6 +205,11 @@ class SessionState:
     palette_index: int = 0
     picker: Picker | None = None
     question: Any = None  # a free-text question waiting for the next Enter
+    # The open run's own model, SDK and effort. They can differ from the selection above, which is
+    # what the next run starts with: a resumed run keeps its SDK, and /model mid-run waits for the next one.
+    run_model: str | None = None
+    run_sdk: str | None = None
+    run_effort: str | None = None
 
     @property
     def accent(self) -> str:
@@ -219,6 +227,15 @@ class SessionState:
     def has_effort(self) -> bool:
         """Effort is a Claude setting, which Haiku 4.5 predates."""
         return self.sdk == "claude" and not (self.model or "").startswith("claude-haiku-4")
+
+    @property
+    def live_model_label(self) -> str:
+        """The model the next message goes to: the open run's, else the selection."""
+        return model_label(self.run_model or self.model)
+
+    @property
+    def run_open(self) -> bool:
+        return self.running or self.waiting
 
     def elapsed(self) -> str:
         secs = int(time.time() - self.started) if self.started else 0
@@ -427,11 +444,11 @@ class LedgerView:
     def receipt(self, lines: list[str], error: bool = False) -> None:
         room = max(20, width() - INDENT - 4)
 
-        def block(rows: list[str], more: int) -> Group:
+        def block(rows: list[str], more: int, cut: bool) -> Group:
             texts = []
             for i, line in enumerate(rows):
                 line = terminal_safe(line)
-                body = Text(line if len(line) <= room else line[: room - 1] + "…", style=PINK if error else DIM)
+                body = Text(line if not cut or len(line) <= room else line[: room - 1] + "…", style=PINK if error else DIM)
                 RECEIPT_HL.highlight(body)
                 texts.append(Text.assemble(" " * INDENT, ("└ " if i == 0 else "  ", HAIRLINE), body))
             if more:
@@ -442,7 +459,7 @@ class LedgerView:
         lines = [re.sub(r"^#+\s+", "", line.rstrip()) for line in lines if line.strip()] or ["done"]
         more = max(0, len(lines) - OUTPUT_PREVIEW)
         self.st.folded = self.st.folded or more > 0
-        self.out(block(lines[:OUTPUT_PREVIEW], more), block(lines, 0))
+        self.out(block(lines[:OUTPUT_PREVIEW], more, cut=True), block(lines, 0, cut=False))
 
     def code(self, source: str, language: str) -> None:
         """Written code, previewed from its first definition; ctrl+o shows all of it."""
@@ -489,7 +506,7 @@ class LedgerView:
             status = str(t.get("status", "pending")).lower()
             text = (t.get("activeForm") if status == "in_progress" else None) or t.get("content") or ""
             color = MINT if status == "completed" else INK if status == "in_progress" else DIM
-            rows.append(Text.assemble(" " * INDENT, (f"{marks.get(status, '·')} ", color), (str(text)[:90], color)))
+            rows.append(Text.assemble(" " * INDENT, (f"{marks.get(status, '·')} ", color), (terminal_safe(str(text))[:90], color)))
         self.out(Group(*rows))
 
     def card(self, path: Path, lines_written: int, language: str) -> None:
@@ -501,9 +518,10 @@ class LedgerView:
             (f"  [{INK_SOFT}]{lang} · {lines_written} lines[/]", f"  {lang} · {lines_written} lines"),
             (f"  [{DIM}]{k(st.tokens)} tokens · {money(st.cost)}[/]", f"  {k(st.tokens)} tokens · {money(st.cost)}"),
         ]
+        model, effort, sdk = st.live_model_label, st.run_effort, st.run_sdk or st.sdk
         stub = [
-            (f"[{INK_SOFT}]{escape(st.model_label)}[/]", st.model_label),
-            (f"[{DIM}]effort {st.effort_label}[/]", f"effort {st.effort_label}") if st.has_effort else (f"[{DIM}]{st.sdk}[/]", st.sdk),
+            (f"[{INK_SOFT}]{escape(model)}[/]", model),
+            (f"[{DIM}]effort {effort}[/]", f"effort {effort}") if effort else (f"[{DIM}]{sdk}[/]", sdk),
             (f"[{DIM}]{st.elapsed()}[/]", st.elapsed()),
         ]
         main_w = max(len(plain) for _, plain in main) + 4
@@ -526,7 +544,7 @@ class LedgerView:
         tokens = (usage.get("input_tokens") or 0) + (usage.get("output_tokens") or 0)
         when = str(run.get("timestamp", ""))[:16].replace("T", " ")
         facts = " · ".join(x for x in (when, model_label(run.get("model")) if run.get("model") else "", run.get("mode") or "") if x)
-        spend = " · ".join(x for x in (f"${cost:.2f}" if cost else "", f"{k(tokens)} tokens" if tokens else "") if x)
+        spend = " · ".join(x for x in (money(cost) if cost else "", f"{k(tokens)} tokens" if tokens else "") if x)
         script = (run.get("paths") or {}).get("script_path")
         lines = [f" [{self.st.accent}]*[/] [bold {INK}]{escape(str(run.get('run_id', '')))}[/]  [{DIM}]{escape(facts)}[/]"]
         lines.append(f"   [{HAIRLINE}]└[/] [{INK_SOFT}]{escape(first_words(str(run.get('prompt') or ''), 200))}[/]")
@@ -552,9 +570,10 @@ class LedgerView:
             shown.append(Text.assemble(" " * 13, (f"+{len(rows) - len(shown)} lines · ctrl+o full output", DIM)))
         self.out(Group(*shown), Group(*rows))
 
-    def event(self, key: str, old: str, new: str) -> None:
+    def event(self, key: str, old: str, new: str, note: str = "") -> None:
         """A settings change, set apart from the conversation: ◇ model  sonnet 5.5 → opus 5.5."""
-        self.out(f"   [{AMBER}]◇[/] [{INK_SOFT}]{escape(key)}[/]  [{DIM}]{escape(old)} →[/] [bold {INK}]{escape(new)}[/]")
+        tail = f"  [{DIM}]· {escape(note)}[/]" if note else ""
+        self.out(f"   [{AMBER}]◇[/] [{INK_SOFT}]{escape(key)}[/]  [{DIM}]{escape(old)} →[/] [bold {INK}]{escape(new)}[/]{tail}")
 
     def notice(self, text: str) -> None:
         self.out(f"   [{DIM}]{escape(text)}[/]")
@@ -604,7 +623,7 @@ class LedgerView:
         """The line above the input, a fieldset legend: the mode on the left, the model on the right."""
         st = self.st
         left = [(f"fg:{HAIRLINE}", " ┄┄ "), (f"fg:{st.accent} italic", st.mode), ("", " ")]
-        right = [("", " "), (f"fg:{INK_SOFT}", st.model_label), (f"fg:{HAIRLINE}", " ┄┄")]
+        right = [("", " "), (f"fg:{INK_SOFT}", st.live_model_label), (f"fg:{HAIRLINE}", " ┄┄")]
         used = sum(len(t) for _, t in left) + sum(len(t) for _, t in right)
         return left + [(f"fg:{HAIRLINE}", "┄" * max(1, width() - used - 1))] + right
 
