@@ -83,8 +83,13 @@ _CLAUDE_SETTING_SOURCES = ("user", "project", "local")
 _CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
-def build_sdk_effort() -> dict[str, Any]:
-    """ClaudeAgentOptions kwargs for the configured ``claude_effort``; empty keeps the model default."""
+def build_sdk_effort(model: str | None = None) -> dict[str, Any]:
+    """ClaudeAgentOptions kwargs for the configured ``claude_effort``; empty keeps the model default.
+
+    Haiku 4.5 predates effort, so it never gets one.
+    """
+    if (model or "").startswith("claude-haiku-4"):
+        return {}
     try:
         from .config import ConfigManager
 

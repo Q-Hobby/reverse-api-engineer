@@ -2055,7 +2055,8 @@ def run_engineer(
             on_session=on_session,
         )
 
-    if result:
+    # A run stopped before its first turn finished has nothing to copy or record.
+    if result and result.get("script_path"):
         # Skip manual copy if real-time sync is enabled (files already synced)
         if not enable_sync:
             # Automatically copy to current directory with a readable name

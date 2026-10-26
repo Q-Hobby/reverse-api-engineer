@@ -235,12 +235,12 @@ class SessionState:
 
     @property
     def effort_label(self) -> str:
-        return self.effort or default_effort(self.model)
+        return self.effort or default_effort(self.next_model)
 
     @property
     def has_effort(self) -> bool:
-        """Effort is a Claude setting, which Haiku 4.5 predates."""
-        return self.sdk == "claude" and not (self.model or "").startswith("claude-haiku-4")
+        """Effort is a Claude setting, which Haiku 4.5 predates; collector mode goes by its own model."""
+        return self.sdk == "claude" and not (self.next_model or "").startswith("claude-haiku-4")
 
     @property
     def next_model(self) -> str | None:

@@ -409,3 +409,33 @@ class TestReviewedResumeAgain:
         eng.usage_metadata = {"input_tokens": 7, "output_tokens": 3}
         eng._report_usage()
         assert st.tokens == 10
+
+
+class TestStoppedEngineerRuns:
+    @pytest.fixture
+    def history(self, monkeypatch):
+        sm, config = MagicMock(), MagicMock()
+        config.get.side_effect = lambda key, default=None: {"sdk": "claude", "real_time_sync": True}.get(key, default)
+        monkeypatch.setattr(cli, "session_manager", sm)
+        monkeypatch.setattr(cli, "config_manager", config)
+        sm.get_run.return_value = {"run_id": "r1", "prompt": "jobs", "paths": {"har_dir": "/tmp/har"}}
+        return sm
+
+    def test_a_run_stopped_before_its_first_turn_records_nothing(self, history):
+        with patch.object(cli, "run_reverse_engineering", return_value={"error": "interrupted"}):
+            assert cli.run_engineer("r1") == {"error": "interrupted"}
+        history.update_run.assert_not_called()
+
+    def test_a_run_stopped_after_a_turn_keeps_that_turn(self, history):
+        result = {"script_path": "/tmp/scripts/r1/api_client.py", "usage": {"input_tokens": 5}, "error": "interrupted"}
+        with patch.object(cli, "run_reverse_engineering", return_value=result):
+            cli.run_engineer("r1")
+        assert history.update_run.call_args.kwargs["paths"] == {"script_path": "/tmp/scripts/r1/api_client.py"}
+
+
+def test_haiku_4_5_never_gets_an_effort():
+    from reverse_api import utils
+
+    with patch("reverse_api.config.ConfigManager.get", return_value="high"):
+        assert utils.build_sdk_effort("claude-haiku-4-5") == {}
+        assert utils.build_sdk_effort("claude-haiku-5-5") == {"effort": "high"}

@@ -115,7 +115,7 @@ class Collector:
             model=self.model,
             env=build_sdk_env(),
             **build_sdk_settings(),
-            **build_sdk_effort(),
+            **build_sdk_effort(self.model),
         )
 
         try:

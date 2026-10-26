@@ -1139,3 +1139,12 @@ class TestReviewedAgain:
             session.start("companies hiring")
             classic.call_args.args[0]()
         runner.assert_called_once_with("companies hiring", "claude-haiku-5-5")
+
+
+def test_collector_mode_effort_follows_the_collectors_model(app_session):
+    session, _history = app_session
+    st = session.st
+    st.mode, st.collector_model = "collector", "claude-haiku-4-5"
+    assert not st.has_effort
+    st.collector_model = "claude-opus-5-5"
+    assert st.has_effort and st.effort_label == "medium"
