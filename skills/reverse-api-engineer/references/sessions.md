@@ -2,9 +2,11 @@
 
 ## Logged-in sites
 
-The default provider starts a fresh browser with no cookies. When the data sits behind the user's account, set `agent_provider` to `chrome-mcp` in `~/.reverse-api/config.json` (with the user's agreement). It drives the user's own Chrome, so existing sessions carry over.
+The default `chrome-mcp` provider drives the user's own Chrome, so existing sessions carry over. Check `agent_provider` in `~/.reverse-api/config.json`: configs created before chrome-mcp became the default may still say `auto` (a fresh Playwright browser with no cookies). Switch it to `chrome-mcp` only with the user's agreement.
 
-Headed `chrome-mcp` requires Chrome 146+ with auto-connect enabled at `chrome://inspect/#remote-debugging`. The CLI cannot check this, so ask the user to confirm it. With `--headless`, auto-connect is not used and there is no existing session.
+Headed `chrome-mcp` requires Chrome 146+ running with auto-connect enabled at `chrome://inspect/#remote-debugging`. `agent --dry-run` checks this as `chrome-mcp:auto-connect`, and a headed run stops with `error_kind: config_invalid` when it fails. With `--headless`, rae starts its own Chrome: no existing sessions, and no check.
+
+`chrome-mcp` keeps no HAR, so these runs cannot be re-engineered with `engineer`. When the user expects to iterate on the same capture many times, the `auto` provider records a HAR, at the cost of a fresh browser without their sessions.
 
 The generated client will need the same auth. Make sure it reads cookies or tokens from the environment or a file the user controls, never from values hardcoded out of the capture.
 
