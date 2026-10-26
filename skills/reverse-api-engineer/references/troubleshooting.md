@@ -6,10 +6,11 @@ Failed runs return `status: "error"` with an `error` message and an `error_kind`
 |---|---|---|
 | `misuse` | Missing `-p` in scripted mode, bad flag, invalid URL, `engineer` on a run without a HAR | Fix the command; `--dry-run` shows which check fails |
 | `config_invalid` | Bad value in `~/.reverse-api/config.json`, unknown SDK or provider | Run `agent --dry-run`, fix the named key |
-| `permission_denied` | Model credentials rejected, or the host blocked a file or process | Check the SDK auth in [setup](setup.md) |
-| `network` | Site unreachable, model API unreachable, proxy issues | Retry once; if it persists, check connectivity before rerunning |
+| `permission_denied` | The OS or host refused a file or process ("permission denied") | Check write access to `~/.reverse-api` and the working directory |
+| `network` | Site or model API unreachable, a request timed out, proxy issues | Retry once; if it persists, check connectivity before rerunning |
 | `engine_failure` | The browser tooling or model session failed mid-run | Rerun with `RAE_DEBUG=1` to get a traceback on stderr |
-| `interrupted` | The run was cancelled or timed out on the host side | Rerun with a longer timeout, or in the background |
+| `interrupted` | The run was cancelled (Ctrl+C or SIGINT) | Rerun in the background (SKILL.md step 4) if a foreground command was cut off |
+| `unknown` | Anything else, including rejected model credentials | Read the `error` text; for auth errors check the SDK auth in [setup](setup.md). Do not retry blindly |
 
 Other cases:
 

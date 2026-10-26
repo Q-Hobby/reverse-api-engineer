@@ -29,7 +29,15 @@ Agent mode also needs Node.js 20.19+ on `PATH` (it launches browser tooling thro
 reverse-api-engineer list --search "<site or task>" --json
 ```
 
-If a matching run exists and its `mode` is not `chrome-mcp`, skip to step 5 and improve it with `engineer` instead of browsing again. `chrome-mcp` runs keep no HAR, so they cannot be re-engineered; reuse their client from step 5 or capture again.
+`list` also includes failed and interrupted attempts, so check a candidate before reusing it:
+
+```bash
+reverse-api-engineer show <run_id> --json
+```
+
+- `file_count > 0` means a client was generated: verify it in step 5 and reuse it if it covers the task.
+- `har_entries > 0` means the traffic was saved: you can improve the client with `engineer` (step 6) instead of browsing again. `chrome-mcp` runs keep no HAR (`mode: "chrome-mcp"`), so they cannot be re-engineered.
+- Otherwise, capture again from step 3.
 
 ## 3. Preflight
 
@@ -48,13 +56,14 @@ Write the goal as the data the user wants, not the clicks: "fetch open roles wit
 
 ## 4. Capture and generate
 
-A run takes several minutes, often longer than a shell tool's default timeout. Start it in the background from the outset, with progress going to a log file:
+A run takes several minutes, often longer than a shell tool's default timeout. Start it in the background from the outset, with your shell tool's background option when it has one, or with `&`:
 
 ```bash
-reverse-api-engineer agent -p "<goal>" -u "<start url>" --json-stream > rae-run.ndjson 2> rae-run.log
+reverse-api-engineer agent -p "<goal>" -u "<start url>" --json-stream > rae-run.ndjson 2> rae-run.log &
+echo $! > rae-run.pid
 ```
 
-`--json-stream` writes one NDJSON event per line and ends with a `{"event":"result",...}` line. Wait for that line, or for the process to exit, before reading the result. Check progress with `tail rae-run.log`. Never start a second capture while one is still running: it repeats the work and the cost.
+`--json-stream` writes one NDJSON event per line and ends with a `{"event":"result",...}` line. The run is finished when that line appears in `rae-run.ndjson`, or when the process in `rae-run.pid` has exited (`kill -0 "$(cat rae-run.pid)"` fails). Check progress with `tail rae-run.log`. Never start a second capture while one is still running: it repeats the work and the cost.
 
 - Without `--headless`, `chrome-mcp` opens its own tab in the user's Chrome and closes only that tab. Tell the user before starting, since it acts in their browser.
 - Add `--headless` for public sites, or on machines without a display.
@@ -97,7 +106,7 @@ Without `--fresh`, the prompt is layered on top of the original goal and the exi
 
 ## 7. Hand it over
 
-rae also writes a copy to `./scripts/<descriptive_name>/` in the working directory, so run it from the user's project or move that folder where it belongs. Adapt names and types to their codebase, and keep the generated `README.md` as usage notes. Tell the user which endpoints it wraps and how auth is handled (cookies, bearer token, CSRF), since captured credentials expire.
+The client lives at `script_path` from the result. When `real_time_sync` is on (the default), rae also copies it to `./scripts/<descriptive_name>/` in the working directory; copy it from `script_path` when that folder is missing. Adapt names and types to their codebase, and keep the generated `README.md` as usage notes. Tell the user which endpoints it wraps and how auth is handled (cookies, bearer token, CSRF), since captured credentials expire.
 
 ## Boundaries
 

@@ -22,7 +22,7 @@ rae calls a model through the SDK selected in its config:
 
 ## Settings
 
-Settings live in `~/.reverse-api/config.json`. The CLI has no flags for them, so change them by editing that file, and only with the user's agreement since it affects every later run. Keys that matter most:
+Settings live in `~/.reverse-api/config.json`. Only two have per-run flags on `agent`: `-o/--output-dir` and `-m/--model` (for the `claude` SDK). Change the others by editing that file, and only with the user's agreement since it affects every later run. Keys that matter most:
 
 | Key | Values |
 |---|---|
