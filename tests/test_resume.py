@@ -210,7 +210,7 @@ class TestCli:
                 "mode": "agent",
                 "sdk": "cursor",
                 "model": "composer-2.5",
-                "output_dir": "/custom",
+                "output_dir": str(Path("/custom").resolve()),  # C:\custom on Windows
                 "output_mode": "client",
                 "id": "agent-1",
                 "cost": 0.0,
