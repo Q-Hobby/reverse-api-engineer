@@ -133,7 +133,12 @@ class Session:
 
         self.cli = cli
         sdk = cli.config_manager.get("sdk", "claude")
-        self.st = SessionState(sdk=sdk, model=cli.default_model_for_configured_sdk(sdk), effort=cli.config_manager.get("claude_effort"))
+        self.st = SessionState(
+            sdk=sdk,
+            model=cli.default_model_for_configured_sdk(sdk),
+            effort=cli.config_manager.get("claude_effort"),
+            collector_model=cli.config_manager.get("collector_model"),
+        )
         self.transcript = Transcript(on_link=open_target)
         self.view = LedgerView(self.st, self.transcript)
         self.buf = Buffer(multiline=False, history=InMemoryHistory())
@@ -201,6 +206,12 @@ class Session:
 
     # commands
 
+    def palette_active(self) -> bool:
+        """The command menu shows while a command is typed, but not over a picker, nor while the agent
+        awaits a typed answer, which can start with / (a path)."""
+        st, text = self.st, self.buf.text
+        return st.picker is None and st.question is None and text.startswith("/") and " " not in text
+
     def palette_items(self) -> list[tuple[str, str]]:
         typed = self.buf.text.strip().lower()
         return sorted(((c, d) for c, d in COMMANDS.items() if c.startswith(typed)), key=lambda item: item[0] != typed)
@@ -233,12 +244,17 @@ class Session:
         self.st.picker = Picker(title, items, current, on_pick, index)
 
     def set_model(self, value: str | None) -> None:
-        if not value or value == self.st.model:
+        st = self.st
+        if not value or value == st.next_model:
             return
-        old = self.st.model_label
-        self.st.model = value
-        self.cli.config_manager.set("claude_code_model", value)
-        self.view.event("model", old, self.st.model_label, "from the next run" if self.st.run_open else "")
+        old = model_label(st.next_model)
+        if st.mode == "collector":
+            st.collector_model = value
+            self.cli.config_manager.set("collector_model", value)
+        else:
+            st.model = value
+            self.cli.config_manager.set("claude_code_model", value)
+        self.view.event("collector model" if st.mode == "collector" else "model", old, model_label(value), "from the next run" if st.run_open else "")
 
     def set_effort(self, value: str | None) -> None:
         if not value or value == self.st.effort_label:
@@ -287,9 +303,11 @@ class Session:
                 from ..tui import get_model_choices
 
                 choices = [(c["value"], model_label(c["value"]), c["name"].split("[")[-1].rstrip("]").lower()) for c in get_model_choices()]
-                if st.model and st.model not in [value for value, _, _ in choices]:
-                    choices.insert(0, (st.model, model_label(st.model), "current"))  # e.g. the Sonnet 4.6 default
-                self.open_picker("choose a model", choices, st.model, self.set_model)
+                current = st.next_model
+                if current and current not in [value for value, _, _ in choices]:
+                    choices.insert(0, (current, model_label(current), "current"))  # e.g. the Sonnet 4.6 default
+                title = "choose the collector's model" if st.mode == "collector" else "choose a model"
+                self.open_picker(title, choices, current, self.set_model)
         elif cmd == "/effort" and not st.has_effort:
             view.command(cmd)
             view.notice(f"effort is a claude setting · this session runs {st.sdk} {st.model_label}")
@@ -339,6 +357,7 @@ class Session:
         self.st.sdk = cfg.get("sdk", "claude")
         self.st.model = self.cli.default_model_for_configured_sdk(self.st.sdk)
         self.st.effort = cfg.get("claude_effort")
+        self.st.collector_model = cfg.get("collector_model")
 
     # past runs
 
@@ -467,7 +486,7 @@ class Session:
     def start(self, prompt: str, mode: str | None = None, echo: bool = True) -> None:
         cli = self.cli
         mode = mode or self.st.mode
-        model = self.st.model if self.st.sdk == "claude" else None
+        model = (self.st.collector_model if mode == "collector" else self.st.model) if self.st.sdk == "claude" else None
         run: Callable[[], Any]
         runner = self.runners.get(mode)
         if runner is not None:
@@ -475,7 +494,7 @@ class Session:
         elif mode == "manual":
             run = lambda: cli.run_manual_capture(prompt=prompt, url=None, reverse_engineer=True, model=model)  # noqa: E731
         elif mode == "collector":
-            run = lambda: cli.run_collector(prompt=prompt, model=None)  # noqa: E731
+            run = lambda: cli.run_collector(prompt=prompt, model=model)  # noqa: E731
         elif mode == "engineer":
             run = lambda: self.engineer(prompt, model)  # noqa: E731
         else:
@@ -646,6 +665,7 @@ class Session:
 
     def quit(self) -> None:
         self.classic_job = None
+        self.st.queue.clear()  # nothing new starts on the way out
         if self.st.running:
             self.bridge.cancel()
         if self.st.waiting:
@@ -670,7 +690,7 @@ class Session:
 
     def build(self) -> Application:
         st, view, buf = self.st, self.view, self.buf
-        palette_open = Condition(lambda: st.picker is None and buf.text.startswith("/") and " " not in buf.text)
+        palette_open = Condition(self.palette_active)
         picker_open = Condition(lambda: st.picker is not None)
 
         def palette_view() -> FormattedText:
@@ -885,7 +905,9 @@ def run_session(
     """
     session = Session()
     session.st.mode = mode
-    if model:
+    if model and mode == "collector":
+        session.st.collector_model = model
+    elif model:
         session.st.model = model
     session.first = first
     if runner is not None:

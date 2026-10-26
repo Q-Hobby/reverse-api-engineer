@@ -91,8 +91,10 @@ class BaseEngineer(ABC):
                 self.on_session(sid)
 
     def _report_usage(self) -> None:
-        """Gives the session the run's tokens and cost; the classic output prints its own summary."""
-        if getattr(self.ui, "shows_tool_results", False):
+        """Gives the full-screen session the run's tokens and cost, for its spend chip and card."""
+        from .repl.bridge import LedgerUI
+
+        if isinstance(self.ui, LedgerUI):
             self.ui.usage(self.usage_metadata)
 
     async def _opening_message(self, brief: str) -> str | None:

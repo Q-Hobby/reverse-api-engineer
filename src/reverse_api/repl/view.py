@@ -169,6 +169,19 @@ def link(text: str, target: Path | str) -> str:
     return f"[link={target.replace('[', '%5B').replace(']', '%5D')}]{escape(text)}[/link]"
 
 
+class Deferred:
+    """A renderable built when it is first rendered, then kept."""
+
+    def __init__(self, build: Callable[[], RenderableType]) -> None:
+        self._build: Callable[[], RenderableType] | None = build
+        self._built: RenderableType | None = None
+
+    def __rich_console__(self, console: Any, options: Any) -> Any:
+        if self._build is not None:
+            self._built, self._build = self._build(), None
+        yield self._built
+
+
 @dataclass
 class Picker:
     title: str
@@ -210,6 +223,7 @@ class SessionState:
     run_model: str | None = None
     run_sdk: str | None = None
     run_effort: str | None = None
+    collector_model: str | None = None  # collector mode runs on its own model setting
 
     @property
     def accent(self) -> str:
@@ -229,9 +243,14 @@ class SessionState:
         return self.sdk == "claude" and not (self.model or "").startswith("claude-haiku-4")
 
     @property
+    def next_model(self) -> str | None:
+        """What a new run in the current mode starts with."""
+        return self.collector_model if self.mode == "collector" and self.collector_model else self.model
+
+    @property
     def live_model_label(self) -> str:
-        """The model the next message goes to: the open run's, else the selection."""
-        return model_label(self.run_model or self.model)
+        """The model the next message goes to: the open run's, else the selection for this mode."""
+        return model_label(self.run_model or self.next_model)
 
     @property
     def run_open(self) -> bool:
@@ -459,7 +478,8 @@ class LedgerView:
         lines = [re.sub(r"^#+\s+", "", line.rstrip()) for line in lines if line.strip()] or ["done"]
         more = max(0, len(lines) - OUTPUT_PREVIEW)
         self.st.folded = self.st.folded or more > 0
-        self.out(block(lines[:OUTPUT_PREVIEW], more, cut=True), block(lines, 0, cut=False))
+        # The full copy is only styled if ctrl+o asks for it: tool output can run to thousands of lines.
+        self.out(block(lines[:OUTPUT_PREVIEW], more, cut=True), Deferred(lambda: block(lines, 0, cut=False)))
 
     def code(self, source: str, language: str) -> None:
         """Written code, previewed from its first definition; ctrl+o shows all of it."""

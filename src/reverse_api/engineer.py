@@ -191,7 +191,8 @@ class ClaudeEngineer(BaseEngineer):
                     else str(output or "")
                 )
                 name = self._tool_names.get(block.tool_use_id, "Tool")
-                self.message_store.save_tool_result(name, bool(block.is_error), text[:20000])
+                saved = text if len(text) <= 20000 else f"{text[:20000]}\n[{len(text) - 20000} more characters not saved]"
+                self.message_store.save_tool_result(name, bool(block.is_error), saved)
                 if getattr(self.ui, "shows_tool_results", False):
                     self.ui.tool_result(name, bool(block.is_error), text)
 
@@ -377,6 +378,10 @@ class ClaudeEngineer(BaseEngineer):
         except KeyboardInterrupt:
             self.ui.console.print("\n  [dim]run aborted[/dim]")
             return last_result
+
+        except asyncio.CancelledError:
+            # Stopped from the session: the turns already done still reach history and the local copy.
+            return {**(last_result or {}), "error": "interrupted"}
 
         except Exception as e:
             self.ui.error(str(e))

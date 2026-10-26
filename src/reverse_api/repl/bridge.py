@@ -20,7 +20,7 @@ from rich.console import Console
 
 from .style import THEME, width
 from .transcript import Raw, TranscriptWriter
-from .view import KIND_VERB, LedgerView, language_for
+from .view import KIND_VERB, LedgerView, default_effort, language_for
 
 # Tools that are plumbing for the agent, not steps worth showing.
 HIDDEN_TOOLS = {"ToolSearch", "AskUserQuestion"}
@@ -205,7 +205,8 @@ class LedgerUI:
         self.b.verified = False
         # The run's own model and SDK; the selection in st.model stays for the next run.
         st.run_model, st.run_sdk = model or st.model, sdk or st.sdk
-        st.run_effort = st.effort_label if st.run_sdk == "claude" and not (st.run_model or "").startswith("claude-haiku-4") else None
+        claude = st.run_sdk == "claude" and not (st.run_model or "").startswith("claude-haiku-4")
+        st.run_effort = (st.effort or default_effort(st.run_model)) if claude else None
         self.view.run_line(run_id, mode)
         self._changed()
 

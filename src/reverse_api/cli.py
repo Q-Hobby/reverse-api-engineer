@@ -1329,7 +1329,7 @@ def collector(prompt: str | None, model: str | None, output_dir: str | None) -> 
             model,
             prompt,
             lambda: run_collector(prompt=prompt, model=model, output_dir=output_dir),
-            lambda p, m: run_collector(prompt=p, model=m or model, output_dir=output_dir),
+            lambda p, m: run_collector(prompt=p, model=m, output_dir=output_dir),
         )
         return
     if not prompt:
@@ -1661,7 +1661,7 @@ def run_auto_capture(
 
         # CopilotAutoEngineer wraps the CopilotEngineer that owns the session.
         core = engineer._engineer if isinstance(engineer, CopilotAutoEngineer) else engineer
-        core.on_session = _session_recorder(run_id, "agent", sdk, model, output_dir)
+        core.on_session = _session_recorder(run_id, "agent", sdk, model, output_dir, headless=headless)
         if resume:
             core.resume_session, core.cost_before = _resume_point(resume)
             # A new browser stretch records its own HAR instead of replacing the run's capture.
@@ -2134,16 +2134,24 @@ def _resume_point(resume: dict[str, Any]) -> tuple[str, float]:
 
 
 def _session_recorder(
-    run_id: str, mode: str, sdk: str, model: str | None, output_dir: str | None, output_mode: str = "client"
+    run_id: str, mode: str, sdk: str, model: str | None, output_dir: str | None, output_mode: str = "client", headless: bool = False
 ) -> Callable[[str], None]:
     """Saves an engine's SDK session on its run as soon as the SDK names it, so even a cut-short run can be resumed.
 
     The session keeps what reopening it needs: its SDK and model, and the output folder, which fixes the
     workspace the SDK filed the session under.
     """
-    session = {"mode": mode, "sdk": sdk, "model": model, "output_dir": str(get_base_output_dir(output_dir).resolve()), "output_mode": output_mode}
+    session: dict[str, Any] = {
+        "mode": mode,
+        "sdk": sdk,
+        "model": model,
+        "output_dir": str(get_base_output_dir(output_dir).resolve()),
+        "output_mode": output_mode,
+    }
     if sdk == "opencode":
         session["provider"] = config_manager.get("opencode_provider", DEFAULT_OPENCODE_PROVIDER)
+    if headless:
+        session["headless"] = True  # a resume keeps its own browser rather than attaching to the user's Chrome
     return lambda sid: session_manager.update_run(run_id=run_id, sdk_session={**session, "id": sid, "cost": 0.0})
 
 
@@ -2179,7 +2187,15 @@ def resume_run(run_id: str) -> dict[str, Any] | None:
     output_dir = session.get("output_dir")
     if session.get("mode") == "agent":
         provider = str(run["mode"]) if run.get("mode") in ("chrome-mcp", "agent-browser") else "auto"
-        return run_auto_capture(prompt=run["prompt"], url=run.get("url"), model=model, output_dir=output_dir, agent_provider=provider, resume=run)
+        return run_auto_capture(
+            prompt=run["prompt"],
+            url=run.get("url"),
+            model=model,
+            output_dir=output_dir,
+            agent_provider=provider,
+            headless=bool(session.get("headless")),
+            resume=run,
+        )
     return run_engineer(run_id, model=model, output_dir=output_dir, output_mode=session.get("output_mode") or "client", resume=run)
 
 

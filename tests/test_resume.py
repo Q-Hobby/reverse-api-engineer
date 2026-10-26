@@ -349,3 +349,63 @@ class TestReviewedEdges:
         console.print(format_error(ValueError("bad [bold]x[/] [/oops]")))
         out = console.file.getvalue()
         assert "bad [bold]x[/] [/oops]" in out and "[bold red]" not in out
+
+
+class TestReviewedResumeAgain:
+    def test_a_headless_run_resumes_headless(self, monkeypatch):
+        history, config = MagicMock(), MagicMock()
+        config.get.side_effect = lambda key, default=None: default
+        monkeypatch.setattr(cli, "session_manager", history)
+        monkeypatch.setattr(cli, "config_manager", config)
+        cli._session_recorder("r1", "agent", "claude", "claude-sonnet-5-5", None, headless=True)("s-1")
+        session = history.update_run.call_args.kwargs["sdk_session"]
+        assert session["headless"] is True
+        history.get_run.return_value = {"run_id": "r1", "prompt": "jobs", "mode": "chrome-mcp", "sdk_session": session}
+        with patch.object(cli, "run_auto_capture") as auto:
+            cli.resume_run("r1")
+        assert auto.call_args.kwargs["headless"] is True
+
+    def test_esc_after_a_finished_turn_keeps_that_turns_result(self, har_path, tmp_path):
+        import asyncio
+
+        from reverse_api.engineer import ClaudeEngineer
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path / "scripts"), patch("reverse_api.base_engineer.MessageStore"):
+            eng = ClaudeEngineer(run_id="r1", har_path=har_path, prompt="p", output_dir=str(tmp_path))
+        eng._process_streaming_response = AsyncMock(return_value={"script_path": "x/api_client.py", "usage": {"input_tokens": 5}})  # type: ignore[method-assign]
+        eng._prompt_follow_up = AsyncMock(side_effect=asyncio.CancelledError)  # type: ignore[method-assign]
+        client = MagicMock()
+        client.return_value.__aenter__ = AsyncMock(return_value=client.return_value)
+        client.return_value.__aexit__ = AsyncMock(return_value=False)
+        client.return_value.query = AsyncMock()
+        with patch("reverse_api.engineer.ClaudeSDKClient", client):
+            out = asyncio.run(eng.analyze_and_generate())
+        assert out == {"script_path": "x/api_client.py", "usage": {"input_tokens": 5}, "error": "interrupted"}
+
+    def test_long_tool_output_is_saved_with_a_marker(self, har_path, tmp_path):
+        from claude_agent_sdk.types import ToolResultBlock
+
+        from reverse_api.engineer import ClaudeEngineer
+
+        with patch("reverse_api.base_engineer.get_scripts_dir", return_value=tmp_path / "scripts"), patch("reverse_api.base_engineer.MessageStore"):
+            eng = ClaudeEngineer(run_id="r1", har_path=har_path, prompt="p", output_dir=str(tmp_path))
+        eng._tool_names["t1"] = "Bash"
+        eng._record_tool_results([ToolResultBlock(tool_use_id="t1", content="x" * 20005, is_error=False)])
+        saved = eng.message_store.save_tool_result.call_args.args[2]
+        assert saved.endswith("[5 more characters not saved]") and saved.startswith("x" * 20000)
+
+    def test_usage_goes_only_to_the_session_ui(self, har_path, tmp_path):
+        from reverse_api.repl.bridge import Bridge, LedgerUI
+        from reverse_api.repl.transcript import Transcript
+        from reverse_api.repl.view import LedgerView, SessionState
+
+        eng = _cursor(har_path, tmp_path)
+        eng.ui = MagicMock(shows_tool_results=True)
+        eng._report_usage()
+        eng.ui.usage.assert_not_called()
+        st = SessionState(model="claude-sonnet-5-5")
+        view = LedgerView(st, Transcript(on_link=lambda _: None))
+        eng.ui = LedgerUI(Bridge(view, invalidate=lambda: None, ask_user=lambda spec: None))
+        eng.usage_metadata = {"input_tokens": 7, "output_tokens": 3}
+        eng._report_usage()
+        assert st.tokens == 10

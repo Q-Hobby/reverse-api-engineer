@@ -769,7 +769,7 @@ class TestResume:
             cli.resume_run("e1")
             assert cli.resume_run("old") is None
         auto.assert_called_once_with(
-            prompt="jobs", url=None, model="claude-opus-5-5", output_dir="/custom", agent_provider="chrome-mcp", resume=agent
+            prompt="jobs", url=None, model="claude-opus-5-5", output_dir="/custom", agent_provider="chrome-mcp", headless=False, resume=agent
         )
         engineer.assert_called_once_with("e1", model=None, output_dir="/runs", output_mode="docs", resume=engineer_run)
 
@@ -1029,7 +1029,7 @@ class TestReviewedSession:
         for item in t.full:
             console.print(item)
         out = console.file.getvalue()
-        assert "line 499" in out and "x" * 300 in out
+        assert all(f"line {i} " + "x" * 300 in out for i in range(500))
 
     def test_usage_counts_other_sdks_cache_tokens(self, session):
         st, _t, _view, b = session
@@ -1057,7 +1057,9 @@ class TestReviewedSession:
         from reverse_api.repl.view import link
 
         _st, t, view, _b = session
-        view.out(link("jobs", "https://example.com/jobs?filter[status]=open"))
+        markup = link("jobs", "https://example.com/jobs?filter[status]=open")
+        assert "filter%5Bstatus%5D=open" in markup
+        view.out(markup)
         assert "jobs" in plain(t) and "]=open" not in plain(t)
 
     def test_reasoning_keeps_dunder_names(self):
@@ -1077,3 +1079,63 @@ class TestReviewedSession:
 
         monkeypatch.setattr(style.shutil, "get_terminal_size", lambda *a, **k: os.terminal_size((30, 10)))
         assert style.width() == 30
+
+
+class TestReviewedAgain:
+    def test_the_full_output_is_styled_only_when_shown(self, session):
+        from reverse_api.repl.view import Deferred
+
+        _st, t, _view, b = session
+        LedgerUI(b).tool_result("Bash", output="\n".join(f"line {i}" for i in range(50)))
+        full = t.full[-1]
+        assert isinstance(full, Deferred) and full._built is None
+        console = Console(file=io.StringIO(), width=200, color_system=None)
+        console.print(full)
+        assert "line 49" in console.file.getvalue() and full._built is not None
+
+    def test_the_run_effort_follows_the_runs_own_model(self, session):
+        st, _t, _view, b = session
+        st.effort = None
+        LedgerUI(b).header("r1", "p", model="claude-opus-5-5")
+        assert st.run_effort == "medium"
+        st.effort = "max"
+        LedgerUI(b).header("r2", "p", model="claude-opus-5-5")
+        assert st.run_effort == "max"
+
+    def test_the_menu_stays_shut_while_the_agent_awaits_a_typed_answer(self, app_session):
+        session, _history = app_session
+        session.buf.text = "/tmp/capture"
+        assert session.palette_active()
+        session.st.question = Future()
+        assert not session.palette_active()
+
+    def test_quitting_drops_queued_prompts(self, app_session):
+        session, _history = app_session
+        session.st.queue = ["later"]
+        session.quit()
+        assert session.st.queue == []
+
+    def test_collector_mode_runs_and_shows_its_own_model(self, app_session):
+        session, _history = app_session
+        st = session.st
+        st.mode, st.collector_model = "collector", "claude-haiku-5-5"
+        assert st.live_model_label == "haiku 5.5"
+        session.set_model("claude-opus-5-5")
+        assert st.collector_model == "claude-opus-5-5" and st.model == "claude-sonnet-5-5"
+        session.cli.config_manager.set.assert_called_with("collector_model", "claude-opus-5-5")
+        with patch.object(session, "classic") as classic:
+            session.start("companies hiring")
+        with patch.object(session.cli, "run_collector") as run:
+            classic.call_args.args[0]()
+        assert run.call_args.kwargs["model"] == "claude-opus-5-5"
+
+    def test_a_collector_runner_gets_the_collectors_model(self, app_session):
+        session, _history = app_session
+        st = session.st
+        st.mode, st.collector_model = "collector", "claude-haiku-5-5"
+        runner = MagicMock()
+        session.runners["collector"] = runner
+        with patch.object(session, "classic") as classic:
+            session.start("companies hiring")
+            classic.call_args.args[0]()
+        runner.assert_called_once_with("companies hiring", "claude-haiku-5-5")
