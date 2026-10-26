@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from copilot.types import PostToolUseHookInput, PostToolUseHookOutput, PreToolUseHookInput, PreToolUseHookOutput
+    from copilot import (
+        PostToolUseFailureHookInput,
+        PostToolUseFailureHookOutput,
+        PostToolUseHookInput,
+        PostToolUseHookOutput,
+        PreToolUseHookInput,
+        PreToolUseHookOutput,
+    )
 
 import httpx2 as httpx
 from claude_agent_sdk import (
@@ -639,6 +646,8 @@ class CopilotAutoEngineer:
             )
             return None
 
+        from .copilot_engineer import tool_output_text
+
         eng = self._engineer
         eng.ui.header(eng.run_id, eng.prompt, eng.copilot_model, eng.sdk, mode="agent")
         eng.ui.start_analysis()
@@ -663,37 +672,11 @@ class CopilotAutoEngineer:
         auto_prompt = opening if eng.resume_session else f"{system_prompt}\n\n{user_message}"
 
         done_event = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        accumulated_text: list[str] = []
-
-        def on_event(event: Any) -> None:
-            event_type = event.type.value if hasattr(event.type, "value") else str(event.type)
-
-            if event_type == "assistant.message_delta":
-                delta = ""
-                if hasattr(event, "data") and hasattr(event.data, "delta_content"):
-                    delta = event.data.delta_content or ""
-                if delta:
-                    accumulated_text.append(delta)
-                    eng.ui.thinking(delta)
-            elif event_type == "assistant.message":
-                if hasattr(event, "data") and hasattr(event.data, "usage"):
-                    usage = event.data.usage
-                    if isinstance(usage, dict):
-                        eng.usage_metadata["input_tokens"] = usage.get("prompt_tokens", 0)
-                        eng.usage_metadata["output_tokens"] = usage.get("completion_tokens", 0)
-            elif event_type == "session.idle":
-                # Use thread-safe call in case SDK invokes callback from a different thread
-                loop.call_soon_threadsafe(done_event.set)
+        errors: list[str] = []
 
         client = None
         try:
-            client = CopilotClient(
-                {
-                    "auto_start": True,
-                    "use_logged_in_user": True,
-                }
-            )
+            client = CopilotClient(use_logged_in_user=True)
             await client.start()
 
             if self.agent_provider == "chrome-mcp":
@@ -740,29 +723,38 @@ class CopilotAutoEngineer:
                 eng.message_store.save_tool_start(tool_name, tool_args)
                 return {"permissionDecision": "allow", "modifiedArgs": tool_args}
 
-            async def on_post_tool_use(input: PostToolUseHookInput, invocation: dict[str, str]) -> PostToolUseHookOutput:
+            async def on_post_tool_use(input: PostToolUseHookInput, _invocation: dict[str, str]) -> PostToolUseHookOutput:
                 tool_name = input.get("toolName", "unknown")
-                is_error = invocation.get("resultType") == "error" if isinstance(invocation, dict) else False
-                output = invocation.get("result") if isinstance(invocation, dict) else None
-                eng.ui.tool_result(tool_name, is_error=is_error, output=str(output) if output else None)
-                eng.message_store.save_tool_result(tool_name, is_error, str(output) if output else None)
+                output = tool_output_text(input.get("toolResult"))
+                eng.ui.tool_result(tool_name, is_error=False, output=output)
+                eng.message_store.save_tool_result(tool_name, False, output)
                 return {}
 
-            config: Any = {
-                "model": eng.copilot_model,
-                "streaming": True,
-                "infinite_sessions": {"enabled": True},
-                "mcp_servers": mcp_servers_payload,
-                "on_permission_request": PermissionHandler.approve_all,
-                "hooks": {
+            async def on_post_tool_use_failure(
+                input: PostToolUseFailureHookInput, _invocation: dict[str, str]
+            ) -> PostToolUseFailureHookOutput:
+                tool_name = input.get("toolName", "unknown")
+                error = str(input.get("error") or "the tool failed")
+                eng.ui.tool_result(tool_name, is_error=True, output=error)
+                eng.message_store.save_tool_result(tool_name, True, error)
+                return {}
+
+            session = await eng._open_copilot_session(
+                client,
+                model=eng.copilot_model,
+                streaming=True,
+                infinite_sessions={"enabled": True},
+                mcp_servers=mcp_servers_payload,
+                on_permission_request=PermissionHandler.approve_all,
+                hooks={
                     "on_pre_tool_use": on_pre_tool_use,
                     "on_post_tool_use": on_post_tool_use,
+                    "on_post_tool_use_failure": on_post_tool_use_failure,
                 },
-            }
-            session = await eng._open_copilot_session(client, config)
+            )
 
-            session.on(on_event)
-            await session.send({"prompt": auto_prompt})
+            session.on(eng._event_handler(done_event, errors))
+            await session.send(auto_prompt)
 
             # Wait with timeout protection (10 minutes)
             try:
@@ -772,8 +764,10 @@ class CopilotAutoEngineer:
                 eng.message_store.save_error("Session timed out")
                 return None
 
-            if accumulated_text:
-                eng.message_store.save_thinking("".join(accumulated_text))
+            if errors:
+                eng.ui.error(errors[-1])
+                eng.message_store.save_error(errors[-1])
+                return None
 
             script_path = str(eng.scripts_dir / eng._get_client_filename())
             local_path = str(eng.local_scripts_dir / eng._get_client_filename()) if eng.local_scripts_dir else None

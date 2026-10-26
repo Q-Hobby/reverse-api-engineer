@@ -70,8 +70,8 @@ class TestCopilot:
         client.resume_session = AsyncMock(return_value=MagicMock(session_id="cp-1"))
         client.create_session = AsyncMock()
         eng.resume_session = "cp-1"
-        await eng._open_copilot_session(client, {"model": "gpt-5"})
-        client.resume_session.assert_awaited_once_with("cp-1", {"model": "gpt-5"})
+        await eng._open_copilot_session(client, model="gpt-5")
+        client.resume_session.assert_awaited_once_with("cp-1", model="gpt-5")
         client.create_session.assert_not_called()
         assert seen == [], "the reopened session is already on the run, with its cost so far"
 
@@ -82,7 +82,8 @@ class TestCopilot:
         eng.on_session = seen.append
         client = MagicMock()
         client.create_session = AsyncMock(return_value=MagicMock(session_id="cp-2"))
-        await eng._open_copilot_session(client, {})
+        await eng._open_copilot_session(client, model="gpt-5")
+        client.create_session.assert_awaited_once_with(model="gpt-5")
         assert seen == ["cp-2"]
 
     @pytest.mark.asyncio
@@ -94,6 +95,66 @@ class TestCopilot:
         with patch("copilot.CopilotClient") as client:
             assert await eng.analyze_and_generate() == {}
         client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_events_stream_text_and_reasoning_and_add_up_usage(self, har_path, tmp_path):
+        import asyncio
+        from types import SimpleNamespace
+
+        eng = self._eng(har_path, tmp_path)
+        ui = MagicMock()
+        eng.ui = ui
+        done, errors = asyncio.Event(), []
+        on_event = eng._event_handler(done, errors)
+
+        def event(kind, **data):
+            return SimpleNamespace(type=SimpleNamespace(value=kind), data=SimpleNamespace(**data))
+
+        on_event(event("assistant.reasoning_delta", delta_content="Plan"))
+        on_event(event("assistant.message_delta", delta_content="Hel"))
+        on_event(event("assistant.message", content="Hello"))
+        on_event(event("assistant.usage", input_tokens=100, output_tokens=5))
+        on_event(event("assistant.usage", input_tokens=50, output_tokens=5, cache_read_tokens=None))
+        on_event(event("session.error", message="No model available"))
+        on_event(event("session.idle"))
+        await asyncio.sleep(0)
+        ui.stream_thinking.assert_called_once_with("Plan")
+        ui.stream_text.assert_called_once_with("Hel")
+        ui.thinking.assert_called_once_with("Hello")
+        assert eng.usage_metadata == {"input_tokens": 150, "output_tokens": 10}
+        assert errors == ["No model available"] and done.is_set()
+
+    @pytest.mark.asyncio
+    async def test_a_session_error_fails_the_run(self, har_path, tmp_path):
+        pytest.importorskip("copilot")
+        import asyncio
+        from types import SimpleNamespace
+
+        eng = self._eng(har_path, tmp_path)
+        eng.ui = MagicMock()
+        session = MagicMock(session_id="cp-3")
+        handlers = []
+        session.on = handlers.append
+
+        async def send(prompt):
+            for kind, data in (("session.error", {"message": "No model available"}), ("session.idle", {})):
+                handlers[0](SimpleNamespace(type=SimpleNamespace(value=kind), data=SimpleNamespace(**data)))
+            await asyncio.sleep(0)
+
+        session.send = send
+        client = MagicMock(start=AsyncMock(), stop=AsyncMock(), create_session=AsyncMock(return_value=session))
+        with patch("copilot.CopilotClient", return_value=client):
+            assert await eng.analyze_and_generate() is None
+        eng.ui.error.assert_called_with("No model available")
+        assert client.create_session.await_args.kwargs["model"] == "gpt-5"
+
+
+def test_tool_output_text_reads_results_and_wire_dicts():
+    from reverse_api.copilot_engineer import tool_output_text
+
+    assert tool_output_text({"textResultForLlm": "200 OK", "resultType": "success"}) == "200 OK"
+    assert tool_output_text(MagicMock(text_result_for_llm="12 jobs")) == "12 jobs"
+    assert tool_output_text(None) is None
 
 
 class TestOpenCode:

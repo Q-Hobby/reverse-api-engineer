@@ -76,7 +76,7 @@ collector = [
     "soupsieve>=2.9.0",
 ]
 copilot = [
-    "github-copilot-sdk>=0.1.0",
+    "github-copilot-sdk>=1.0.26,<2",
 ]
 
 [project.urls]
