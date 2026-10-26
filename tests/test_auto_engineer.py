@@ -428,6 +428,24 @@ class TestClaudeAutoEngineerAnalyze:
                     return eng
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("provider", ["auto", "chrome-mcp", "agent-browser"])
+    async def test_sessions_ignore_user_mcp_servers(self, tmp_path, provider):
+        """Every provider builds an isolated session: only rae's MCP servers, large message buffer."""
+        from reverse_api.utils import SDK_MAX_BUFFER_SIZE
+
+        eng = self._make_engineer(tmp_path, agent_provider=provider)
+        with patch("reverse_api.auto_engineer.ensure_agent_browser_runtime", MagicMock()), \
+             patch("reverse_api.auto_engineer.print_agent_browser_setup_notices", MagicMock()), \
+             patch("reverse_api.auto_engineer.ClaudeSDKClient") as mock_sdk:
+            mock_sdk.return_value.__aenter__ = AsyncMock(side_effect=Exception("stop"))
+            mock_sdk.return_value.__aexit__ = AsyncMock(return_value=False)
+            await eng.analyze_and_generate()
+
+        options = mock_sdk.call_args.kwargs["options"]
+        assert options.strict_mcp_config is True
+        assert options.max_buffer_size == SDK_MAX_BUFFER_SIZE
+
+    @pytest.mark.asyncio
     async def test_exception_generic(self, tmp_path):
         """Generic exception returns None."""
         eng = self._make_engineer(tmp_path)

@@ -33,7 +33,7 @@ from .agent_browser import (
 from .chrome_mcp import CHROME_DEVTOOLS_MCP_PACKAGE
 from .engineer import ClaudeEngineer
 from .opencode_engineer import OpenCodeEngineer, debug_log, format_error
-from .utils import build_sdk_env, get_har_dir
+from .utils import build_sdk_env, get_har_dir, isolated_sdk_options
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -256,6 +256,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 model=self.model,
                 env=build_sdk_env(),
                 stderr=self._handle_cli_stderr,
+                **isolated_sdk_options(),
             )
         else:
             mcp_name, mcp_config = self._get_mcp_config()
@@ -268,6 +269,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 model=self.model,
                 env=build_sdk_env(),
                 stderr=self._handle_cli_stderr,
+                **isolated_sdk_options(),
             )
 
         last_result: dict[str, Any] | None = None

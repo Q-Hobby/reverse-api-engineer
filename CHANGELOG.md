@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Playwright MCP prompt: `browser_run_code` is now `browser_run_code_unsafe`, and the nonexistent `browser_scroll` tool is no longer listed.
+- Claude SDK sessions no longer load the user's own Claude Code MCP servers (`strict_mcp_config`), so a personal browser MCP such as chrome-devtools can no longer replace the provider rae configured, and the message buffer is raised to 32 MB so a large screenshot no longer aborts a run.
 
 ### Security
 - Raise security minimums to aiohttp >=3.14.4, certifi >=2026.10.19, multidict >=6.9.1, OpenTelemetry API >=1.45.1, PyJWT >=2.15.0 and urllib3 >=2.8.0, and lock the patched versions. certifi drops the emSign root CAs whose intermediate keys were compromised.

@@ -22,7 +22,7 @@ from claude_agent_sdk import (
 )
 
 from .base_engineer import REPORT_CLIENT_VERIFIED_INSTRUCTION, BaseEngineer
-from .utils import build_sdk_env, is_context_overflow_error
+from .utils import build_sdk_env, is_context_overflow_error, isolated_sdk_options
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -292,6 +292,7 @@ class ClaudeEngineer(BaseEngineer):
             env=build_sdk_env(),
             stderr=self._handle_cli_stderr,
             mcp_servers={"verification": self._build_verification_mcp_server()},
+            **isolated_sdk_options(),
         )
 
         last_result: dict[str, Any] | None = None

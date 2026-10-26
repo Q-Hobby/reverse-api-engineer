@@ -1099,6 +1099,7 @@ class TestSdkEnvWiring:
 
                 await eng.analyze_and_generate()
 
+        assert mock_options.call_args.kwargs["strict_mcp_config"] is True
         env = mock_options.call_args.kwargs["env"]
         assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == AUTOCOMPACT_PCT
         assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == AUTOCOMPACT_WINDOW

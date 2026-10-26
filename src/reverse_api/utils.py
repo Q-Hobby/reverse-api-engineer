@@ -63,6 +63,20 @@ _CONTEXT_OVERFLOW_MARKERS = (
 )
 
 
+# A full-page browser screenshot can exceed the SDK's 1 MB default and abort the session.
+SDK_MAX_BUFFER_SIZE = 32 * 1024 * 1024
+
+
+def isolated_sdk_options() -> dict[str, Any]:
+    """Claude Agent SDK options shared by every rae session.
+
+    strict_mcp_config keeps the user's own Claude Code MCP servers (for example a
+    personal chrome-devtools server) out of rae's sessions, so the agent only sees
+    the browser and tools rae registers.
+    """
+    return {"strict_mcp_config": True, "max_buffer_size": SDK_MAX_BUFFER_SIZE}
+
+
 def build_sdk_env() -> dict[str, str]:
     """Environment overrides for Claude Agent SDK subprocesses.
 
@@ -178,6 +192,7 @@ async def _generate_folder_name_async(prompt: str) -> str:
         allowed_tools=[],  # No tools needed for simple text generation
         permission_mode="dontAsk",
         model="claude-haiku-4-5",
+        **isolated_sdk_options(),
     )
 
     folder_name = ""
