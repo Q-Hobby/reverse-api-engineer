@@ -45,7 +45,7 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.3.3",
-    "claude-agent-sdk>=0.1.48",
+    "claude-agent-sdk>=0.1.76",
     "rich>=13.0.0",
     "questionary>=2.0.0",
     "watchdog>=3.0.0",
