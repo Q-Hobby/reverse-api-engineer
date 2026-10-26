@@ -57,11 +57,18 @@ class SyncHandler(FileSystemEventHandler):
         self.last_sync_time = 0.0
         self.file_count = 0
 
+    def _relative(self, path: Path) -> Path:
+        """``path`` within the watched folder. Events can name it by its resolved path (macOS /var is /private/var)."""
+        try:
+            return path.relative_to(self.source_dir)
+        except ValueError:
+            return path.resolve().relative_to(self.source_dir.resolve())
+
     def _is_ignored_file(self, file_path: str) -> bool:
         """Check if a file should be ignored during sync."""
         path = Path(file_path)
         try:
-            relative = path.relative_to(self.source_dir)
+            relative = self._relative(path)
         except ValueError:
             relative = path
         return _should_skip_path(relative)
@@ -114,7 +121,7 @@ class SyncHandler(FileSystemEventHandler):
     def _sync_file(self, source_path: str, is_delete: bool = False) -> None:
         """Sync a single file from source to destination."""
         source = Path(source_path)
-        relative = source.relative_to(self.source_dir)
+        relative = self._relative(source)
         dest = self.dest_dir / relative
 
         if is_delete:
