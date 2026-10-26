@@ -6,9 +6,7 @@
     "node": ">=22.13"
   },
   "dependencies": {
-    "@cursor/sdk": "^1.0.24"
-  },
-  "overrides": {
-    "undici": "^6.27.0"
+    "@cursor/sdk": "^1.0.40",
+    "zod": "^4.6.7"
   }
 }
