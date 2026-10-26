@@ -5,7 +5,7 @@ description: Reverse engineer a website's private HTTP API into a typed, runnabl
 
 # Reverse API Engineer
 
-`reverse-api-engineer` (rae) drives a browser through a task, reads the requests the website makes, and turns them into an API client. The default `chrome-mcp` provider works in the user's own Chrome, so their logins carry over. The `auto` provider (Playwright) also records a HAR file, which lets a run be re-engineered later without browsing again.
+`reverse-api-engineer` (rae) drives a browser through a task, reads the requests the website makes, and turns them into an API client. The `chrome-mcp` provider works in the user's own Chrome, so their logins carry over. The `auto` provider (Playwright) uses a fresh browser and records a HAR file, which lets a run be re-engineered later without browsing again. Which one runs depends on the user's config and rae version; step 3 shows how to check.
 
 This skill only supplies instructions. It drives the CLI through its scripted, JSON-emitting commands.
 
@@ -47,10 +47,13 @@ reverse-api-engineer agent -p "<goal>" -u "<start url>" --dry-run
 
 This validates the prompt, URL, config and environment without opening a browser. Fix every `error` check before running. A `warn` on the API key is fine when the SDK authenticates another way (for example a logged-in Claude Code).
 
-With the default `chrome-mcp` provider, `chrome-mcp:auto-connect` checks that the user's Chrome accepts the connection. If it is an `error`:
+`would_run.agent_provider` in the output is the browser the run will use. `chrome-mcp` means the user's own Chrome with their logins; `auto` and `agent-browser` start a fresh browser without them. When the task needs the user's login and the provider is not `chrome-mcp`, ask before switching it (see [sessions](references/sessions.md)).
 
-- The site needs the user's login: ask them to open Chrome 146+, enable remote debugging at `chrome://inspect/#remote-debugging` ("Enable auto-connect"), then run the preflight again.
-- Public data: add `--headless`. rae then starts its own headless Chrome, without the user's sessions, and skips this check.
+For `chrome-mcp`, the `chrome-mcp:auto-connect` check covers the connection to the user's Chrome:
+
+- `ok`: Chrome is reachable.
+- `error`: it is not. If the site needs the user's login, ask them to open Chrome 146+ and enable remote debugging at `chrome://inspect/#remote-debugging` ("Enable auto-connect"), then run the preflight again. For public data, add `--headless`: rae then starts its own headless Chrome, without the user's sessions, and skips the check.
+- `warn`: this rae version cannot test the connection. Ask the user to confirm Chrome is open with auto-connect enabled before a headed run, or use `--headless` for public data.
 
 Write the goal as the data the user wants, not the clicks: "fetch open roles with title, location and team from the careers page, including pagination" works better than "click the jobs tab".
 
