@@ -196,6 +196,18 @@ class Session:
         typed = self.buf.text.strip().lower()
         return sorted(((c, d) for c, d in COMMANDS.items() if c.startswith(typed)), key=lambda item: item[0] != typed)
 
+    def choose(self) -> None:
+        """Enter on an open picker: its highlighted item, or for an agent's question, whatever was typed meanwhile."""
+        p, self.st.picker = self.st.picker, None
+        if p is None:
+            return
+        if p.question and self.buf.text.strip():
+            answer = self.buf.text.strip()
+            self.buf.reset()
+            p.on_pick(answer)
+        else:
+            p.on_pick(p.items[p.index][0])
+
     def open_picker(self, title: str, items: list[tuple[str, str, str]], current: str | None, on_pick: Callable[[str | None], None]) -> None:
         index = next((i for i, (v, _, _) in enumerate(items) if v == current), 0)
         self.st.picker = Picker(title, items, current, on_pick, index)
@@ -222,6 +234,8 @@ class Session:
             self.view.event("mode", old, value)
 
     def cycle_effort(self) -> None:
+        if not self.st.has_effort:
+            return
         level = EFFORTS.index(self.st.effort_label) if self.st.effort_label in EFFORTS else 2
         value = EFFORTS[(level + 1) % len(EFFORTS)]
         self.st.effort = value
@@ -254,6 +268,9 @@ class Session:
 
                 choices = [(c["value"], model_label(c["value"]), c["name"].split("[")[-1].rstrip("]").lower()) for c in get_model_choices()]
                 self.open_picker("choose a model", choices, st.model, self.set_model)
+        elif cmd == "/effort" and not st.has_effort:
+            view.command(cmd)
+            view.notice(f"effort is a claude setting · this session runs {st.sdk} {st.model_label}")
         elif cmd == "/effort":
             self.open_picker("how hard the agent thinks", [(e, e, EFFORT_NOTES[e]) for e in EFFORTS], st.effort_label, self.set_effort)
         elif cmd == "/mode":
@@ -713,9 +730,7 @@ class Session:
 
         @kb.add("enter", filter=picker_open)
         def _(event: KeyPressEvent) -> None:
-            p, st.picker = st.picker, None
-            if p:
-                p.on_pick(p.items[p.index][0])
+            self.choose()
 
         @kb.add("enter", filter=~palette_open & ~picker_open)
         def _(event: KeyPressEvent) -> None:

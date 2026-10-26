@@ -215,6 +215,11 @@ class SessionState:
     def effort_label(self) -> str:
         return self.effort or default_effort(self.model)
 
+    @property
+    def has_effort(self) -> bool:
+        """Effort is a Claude setting, which Haiku 4.5 predates."""
+        return self.sdk == "claude" and not (self.model or "").startswith("claude-haiku-4")
+
     def elapsed(self) -> str:
         secs = int(time.time() - self.started) if self.started else 0
         return f"{secs // 60}m{secs % 60:02d}s" if secs >= 60 else f"{secs}s"
@@ -222,6 +227,10 @@ class SessionState:
 
 def k(n: float) -> str:
     return f"{n / 1000:.1f}k" if n >= 1000 else str(int(n))
+
+
+def money(cost: float) -> str:
+    return "<$0.01" if 0 < cost < 0.005 else f"${cost:.2f}"
 
 
 class LedgerView:
@@ -294,7 +303,8 @@ class LedgerView:
     def stream_done(self, final: str | None = None, kind: str = "message") -> None:
         """The text is complete; ``final`` replaces what streamed, or starts a reveal when nothing did."""
         with self._lock:
-            if self._live is not None and self._live["kind"] != kind:
+            # A live text that is already complete belongs to an earlier message, still being revealed.
+            if self._live is not None and (self._live["kind"] != kind or self._live["closing"]):
                 self._finalize()
             if self._live is None:
                 if not final or not final.strip():
@@ -359,7 +369,7 @@ class LedgerView:
                 (f"fg:{INK_SOFT}", "   turn websites into "),
                 (f"fg:{PINK} italic", "APIs"),
             ],
-            [(f"fg:{DIM}", f"   {st.sdk} · {st.model_label} · effort {st.effort_label}")],
+            [(f"fg:{DIM}", f"   {st.sdk} · {st.model_label}" + (f" · effort {st.effort_label}" if st.has_effort else ""))],
             [],
             [(f"fg:{DIM}", "   describe the API you want · / for commands")],
         ]
@@ -408,6 +418,9 @@ class LedgerView:
         st = self.st
         st.step += 1
         tint = KIND_TINT.get(kind, PASTEL_OTHER)
+        # One line per step: a target that wrapped would start again at the left edge, under the numbers.
+        room = max(10, width() - INDENT - 2)
+        target = target if len(target) <= room else target[: room - 1] + "…"
         shown = link(target, path) if path else link(target, url) if url else escape(target)
         self.out(f" [{tint}]*[/] [{DIM}]{st.step:02d}[/]  [bold {tint}]{escape(verb):<{VERB_COL}}[/] [{INK_SOFT}]{shown}[/]")
 
@@ -486,11 +499,11 @@ class LedgerView:
         main = [
             (f"[{st.accent}]*[/] [bold {INK}]{link(path.name, path)}[/] [italic {PINK}]ready[/]", f"* {path.name} ready"),
             (f"  [{INK_SOFT}]{lang} · {lines_written} lines[/]", f"  {lang} · {lines_written} lines"),
-            (f"  [{DIM}]{k(st.tokens)} tokens · ${st.cost:.2f}[/]", f"  {k(st.tokens)} tokens · ${st.cost:.2f}"),
+            (f"  [{DIM}]{k(st.tokens)} tokens · {money(st.cost)}[/]", f"  {k(st.tokens)} tokens · {money(st.cost)}"),
         ]
         stub = [
             (f"[{INK_SOFT}]{escape(st.model_label)}[/]", st.model_label),
-            (f"[{DIM}]effort {st.effort_label}[/]", f"effort {st.effort_label}"),
+            (f"[{DIM}]effort {st.effort_label}[/]", f"effort {st.effort_label}") if st.has_effort else (f"[{DIM}]{st.sdk}[/]", st.sdk),
             (f"[{DIM}]{st.elapsed()}[/]", st.elapsed()),
         ]
         main_w = max(len(plain) for _, plain in main) + 4
@@ -615,9 +628,11 @@ class LedgerView:
             (f"fg:{GAUGE_EMPTY}", "▱" * (len(EFFORTS) - level - 1)),
             (f"fg:{CHIP_INK}", f" {st.effort_label} "),
         ]
-        left: list[tuple[str, str]] = [("", "   ")] + self.pill(CHIP_LAVENDER, gauge) + [(f"fg:{DIM}", " ⌃e  ")]
+        left: list[tuple[str, str]] = [("", "   ")]
+        if st.has_effort:
+            left += self.pill(CHIP_LAVENDER, gauge) + [(f"fg:{DIM}", " ⌃e  ")]
         if st.cost:
-            left += self.pill(CHIP_YELLOW, [(f"fg:{CHIP_INK} bold", f" ${st.cost:.2f} ")]) + [("", "  ")]
+            left += self.pill(CHIP_YELLOW, [(f"fg:{CHIP_INK} bold", f" {money(st.cost)} ")]) + [("", "  ")]
         if st.scroll:
             hint = [(f"fg:{AMBER}", "end ↓ back to the latest ")]
         elif st.question is not None:

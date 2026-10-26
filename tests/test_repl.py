@@ -290,6 +290,18 @@ class TestSmoothStreaming:
         text = plain(t)
         assert text.index("test the script") < text.index("01  run")
 
+    def test_a_second_message_during_a_reveal_follows_the_first(self, session):
+        _st, t, view, b = session
+        ui = LedgerUI(b)
+        ui.thinking("First, the client works as it is.")
+        ui.tool_start("Bash", {"command": "python api_client.py --limit 3"})
+        ui.thinking("Second, the limit flag is in.")
+        for _ in range(300):
+            view.tick()
+        text = plain(t)
+        assert text.count("First, the client works") == 1 and text.count("Second, the limit flag") == 1
+        assert text.index("First") < text.index("01  run") < text.index("Second")
+
     def test_partial_messages_and_thinking_only_for_the_session(self, session):
         from reverse_api.repl.bridge import stream_options
 
@@ -532,6 +544,19 @@ def test_card_path_is_a_link(session, tmp_path):
     assert handlers, "the client name in the card should be clickable"
 
 
+def test_a_long_step_stays_on_one_line_at_any_width(session, monkeypatch):
+    from reverse_api.repl import transcript, view
+
+    _st, t, _view, b = session
+    for cols in (60, 80, 140):
+        monkeypatch.setattr(view, "width", lambda cols=cols: cols)
+        monkeypatch.setattr(transcript, "width", lambda cols=cols: cols, raising=False)
+        t.clear()
+        LedgerUI(b).tool_start("Bash", {"command": "python /var/folders/bp/4wpy6h8d7s9f9btrd1sbplx40000gn/T/tmp1w10rt4r/api_client.py --limit 5"})
+        lines = [line for line in plain(t).splitlines() if line.strip()]
+        assert len(lines) == 1 and len(lines[0]) <= cols, (cols, lines)
+
+
 class Loop:
     """Runs call_soon_threadsafe callbacks at once, standing in for the app's loop."""
 
@@ -579,6 +604,18 @@ class TestRunLifecycle:
         with patch.object(session, "start") as start:
             session.submit("all jobs on example.com")
         start.assert_called_once_with("all jobs on example.com")
+
+    def test_typing_while_the_options_show_answers_in_ones_own_words(self, app_session):
+        session, _history = app_session
+        session.loop = Loop()
+        fut = session.ask_user({"question": "Which board?", "options": [("openai", ""), ("anthropic", "")]})
+        session.buf.text = "ramp"
+        session.choose()
+        assert fut.result() == "ramp" and session.buf.text == "" and session.st.picker is None
+        fut = session.ask_user({"question": "Which board?", "options": [("openai", ""), ("anthropic", "")]})
+        session.st.picker.index = 1
+        session.choose()
+        assert fut.result() == "anthropic"
 
     def test_a_question_stopped_before_it_shows_stays_away(self, app_session):
         session, _history = app_session
@@ -843,3 +880,34 @@ class TestSubcommands:
         with patch.object(cli, "open_session") as session, patch.object(cli, "run_agent_capture", return_value={}):
             CliRunner().invoke(cli.main, ["agent", "-p", "jobs", "--json"])
         session.assert_not_called()
+
+
+class TestEffortIsClaudeOnly:
+    def test_other_sdks_show_no_effort(self, app_session):
+        session, _history = app_session
+        st = session.st
+        st.sdk, st.model = "copilot", "gpt-5"
+        assert not st.has_effort
+        assert "effort" not in "".join(text for row in session.view.header_rows(0.0) for _, text in row)
+        assert "⌃e" not in "".join(text for _, text in session.view.status())
+        session.cycle_effort()
+        assert st.effort is None
+        session.run_command("/effort")
+        assert st.picker is None and "effort is a claude setting" in plain(session.transcript)
+
+    def test_claude_keeps_its_effort(self, app_session):
+        session, _history = app_session
+        st = session.st
+        st.sdk, st.model = "claude", "claude-opus-5-5"
+        assert st.has_effort and "⌃e" in "".join(text for _, text in session.view.status())
+        st.model = "claude-haiku-4-5"
+        assert not st.has_effort
+
+
+def test_tiny_costs_read_as_under_a_cent(session):
+    from reverse_api.repl.view import money
+
+    st, _t, view, _b = session
+    assert (money(0.004), money(0.0), money(0.07)) == ("<$0.01", "$0.00", "$0.07")
+    st.cost = 0.004
+    assert "<$0.01" in "".join(text for _, text in view.status())
