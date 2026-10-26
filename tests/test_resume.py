@@ -245,15 +245,6 @@ class TestCli:
         eng._record_session("agent-2")
         assert seen == ["agent-2"]
 
-    def test_classic_resume_takes_a_run_id_or_offers_the_resumable_runs(self, history):
-        history.history = [{"run_id": "a1", "prompt": "jobs", "sdk_session": {"id": "s"}}, {"run_id": "old", "prompt": "x"}]
-        with patch.object(cli, "resume_run") as resume, patch.object(cli.questionary, "select") as select:
-            cli.handle_resume("a1")
-            select.return_value.ask.return_value = "a1"
-            cli.handle_resume("")
-        assert [c.value for c in select.call_args.kwargs["choices"]] == ["a1", "back"]
-        assert resume.call_args_list == [(("a1",),), (("a1",),)]
-
     def test_a_resume_uses_the_run_sdk_even_when_settings_changed(self):
         assert cli._session_sdk({"sdk_session": {"id": "s", "sdk": "copilot"}}) == "copilot"
         assert cli._session_sdk({"sdk_session": {"id": "s"}}) == "claude", "sessions saved before the sdk was recorded"

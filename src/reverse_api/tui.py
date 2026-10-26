@@ -8,9 +8,7 @@ from rich.markup import escape
 from rich.padding import Padding
 from rich.text import Text
 
-from .branding import print_cli_logo
 from .theme import (
-    APP_TAGLINE,
     BRAND_MARK,
     BRAND_WORDMARK,
     MODE_COLORS,
@@ -402,38 +400,4 @@ def print_session_header(
             f" [{THEME_DIM}]model[/{THEME_DIM}]  [{THEME_SECONDARY}]{model or '---'}[/{THEME_SECONDARY}]"
         )
     console.print(f" [{mode_color}]{mode_label}[/{mode_color}]   [{THEME_SECONDARY}]{escape(prompt)}[/{THEME_SECONDARY}]")
-    console.print()
-
-
-def display_banner(console: Console, sdk: str | None = None, model: str | None = None) -> None:
-    """Display minimalist startup banner with * rae branding."""
-    # Redirected Windows streams may use a legacy encoding such as cp1252.
-    divider = "--" if console.options.ascii_only else "━━"
-    separator = "|" if console.options.ascii_only else "·"
-    console.print()
-    print_cli_logo(console)
-    console.print(f"  [bold {THEME_PRIMARY}]{divider}[/bold {THEME_PRIMARY}]")
-    if sdk and model:
-        console.print(
-            f"  [{THEME_DIM}]sdk[/{THEME_DIM}] [{THEME_SECONDARY}]{sdk}[/{THEME_SECONDARY}]"
-            f" [{THEME_DIM}]{separator}[/{THEME_DIM}] [{THEME_DIM}]model[/{THEME_DIM}]"
-            f" [{THEME_SECONDARY}]{model}[/{THEME_SECONDARY}]"
-        )
-    console.print()
-    console.print(f"  [{THEME_DIM}]{APP_TAGLINE}[/{THEME_DIM}]")
-    console.print()
-
-
-def display_footer(console: Console) -> None:
-    """Display minimalist footer."""
-    from datetime import datetime
-
-    from . import __version__
-
-    time_str = datetime.now().strftime("%H:%M")
-
-    console.print(
-        f"\n [{THEME_DIM}][{THEME_PRIMARY}]{BRAND_MARK}[/{THEME_PRIMARY}]"
-        f" v{__version__} {time_str} via cli[/{THEME_DIM}]"
-    )
     console.print()

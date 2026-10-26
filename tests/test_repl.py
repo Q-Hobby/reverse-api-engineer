@@ -774,3 +774,72 @@ class TestResume:
             session.run_command("/resume a1")
         work.assert_not_called()
         assert "a run is open" in plain(session.transcript)
+
+
+class TestEntry:
+    def test_a_subcommand_run_starts_once_the_app_is_up(self, app_session):
+        session, _history = app_session
+        run = MagicMock()
+        session.first = ("jobs on example.com", run)
+        with patch.object(session, "work") as work, patch("reverse_api.utils.check_for_updates", return_value=None):
+            session.start_first()
+            session.start_first()
+        work.assert_called_once_with(run)
+        assert "jobs on example.com" in plain(session.transcript) and session.st.running
+
+    def test_plain_terminal_modes_hand_the_run_to_the_classic_screen(self, app_session):
+        session, _history = app_session
+        session.app = MagicMock()
+        session.st.mode = "collector"
+        run = MagicMock()
+        session.first = ("companies hiring", run)
+        with patch("reverse_api.utils.check_for_updates", return_value=None):
+            session.start_first()
+        session.app.exit.assert_called_once()
+        assert session.take_classic_job() is not None
+
+    def test_an_update_shows_as_a_notice(self, app_session):
+        session, _history = app_session
+        threads = []
+        with patch("reverse_api.repl.app.threading.Thread", side_effect=lambda target, **_: threads.append(target) or MagicMock()):
+            session.start_first()
+        with patch("reverse_api.utils.check_for_updates", return_value="update available: 0.14.0 → 0.15.0"):
+            threads[0]()
+        assert "update available: 0.14.0 → 0.15.0" in plain(session.transcript)
+
+
+class TestSubcommands:
+    def test_agent_in_a_terminal_opens_the_session_with_every_option(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from reverse_api import cli
+
+        monkeypatch.setattr(cli, "_in_terminal", lambda: True)
+        with patch.object(cli, "open_session") as session, patch.object(cli, "run_agent_capture") as capture:
+            CliRunner().invoke(cli.main, ["agent", "-p", "jobs", "-u", "https://example.com", "--headless"])
+            mode, model, prompt, run = session.call_args.args
+            run()
+        assert (mode, model, prompt) == ("agent", None, "jobs")
+        capture.assert_called_once_with(prompt="jobs", url="https://example.com", model=None, output_dir=None, headless=True)
+
+    def test_without_a_terminal_a_prompt_is_required(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from reverse_api import cli
+
+        monkeypatch.setattr(cli, "_in_terminal", lambda: False)
+        with patch.object(cli, "open_session") as session:
+            agent = CliRunner().invoke(cli.main, ["agent"])
+            collector = CliRunner().invoke(cli.main, ["collector"])
+        session.assert_not_called()
+        assert agent.exit_code == 2 and collector.exit_code == 2
+
+    def test_json_never_opens_the_session(self, monkeypatch):
+        from click.testing import CliRunner
+
+        from reverse_api import cli
+
+        monkeypatch.setattr(cli, "_in_terminal", lambda: True)
+        with patch.object(cli, "open_session") as session, patch.object(cli, "run_agent_capture", return_value={}):
+            CliRunner().invoke(cli.main, ["agent", "-p", "jobs", "--json"])
+        session.assert_not_called()

@@ -1,8 +1,8 @@
-"""The full-screen interactive session: header, conversation, input bar fixed to the bottom.
+"""The interactive CLI: a full-screen session with the conversation above an input bar fixed to the bottom.
 
 Agent and engineer runs on the Claude, Copilot and Cursor SDKs stream into the conversation
-through the bridge. Modes not ported yet (manual, collector, OpenCode) and /settings leave full
-screen, run in the classic interface on the main thread, then hand back.
+through the bridge. Screens not ported yet (manual, collector, OpenCode runs, /settings) leave
+full screen, run in the plain terminal on the main thread, then hand back.
 """
 
 from __future__ import annotations
@@ -142,6 +142,8 @@ class Session:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.real_out, self.real_err = sys.stdout, sys.stderr
         self.classic_job: Callable[[], None] | None = None
+        self.first: tuple[str, Callable[[], Any]] | None = None  # a run a subcommand handed over
+        self.update_checked = False
         # Stray prints read as notices: dim and indented like the rest of the ledger.
         self.capture = TranscriptWriter(self._captured, plain_style=f"fg:{DIM}", indent="   ")
 
@@ -424,26 +426,50 @@ class Session:
         self.invalidate()
 
     def start(self, prompt: str, mode: str | None = None, echo: bool = True) -> None:
-        st, cli = self.st, self.cli
+        cli = self.cli
+        mode = mode or self.st.mode
+        model = self.st.model if self.st.sdk == "claude" else None
+        run: Callable[[], Any]
+        if mode == "manual":
+            run = lambda: cli.run_manual_capture(prompt=prompt, url=None, reverse_engineer=True, model=model)  # noqa: E731
+        elif mode == "collector":
+            run = lambda: cli.run_collector(prompt=prompt, model=None)  # noqa: E731
+        elif mode == "engineer":
+            run = lambda: self.engineer(prompt, model)  # noqa: E731
+        else:
+            run = lambda: cli.run_agent_capture(prompt=prompt, model=model)  # noqa: E731
+        self.launch(prompt, run, mode, echo)
+
+    def launch(self, prompt: str, run: Callable[[], Any], mode: str | None = None, echo: bool = True) -> None:
+        """Start a run in the session, or in the plain terminal for the screens not ported yet."""
+        st = self.st
         mode = mode or st.mode
         st.host, st.client_name = host_in(prompt), ""
         if echo:
             self.view.user(prompt)
-        model = st.model if st.sdk == "claude" else None
-        classic = mode in ("manual", "collector") or st.sdk == "opencode"
-        if not classic:
-            st.started, st.running, st.verb, st.kind = time.time(), True, "starting", "other"
-        if mode == "manual":
-            self.classic(lambda: cli.run_manual_capture(prompt=prompt, url=None, reverse_engineer=True, model=model))
-        elif mode == "collector":
-            self.classic(lambda: cli.run_collector(prompt=prompt, model=None))
-        elif st.sdk == "opencode":
-            run = (lambda: self.engineer(prompt, model)) if mode == "engineer" else (lambda: cli.run_agent_capture(prompt=prompt, model=model))
+        if mode in ("manual", "collector") or st.sdk == "opencode":
             self.classic(run)
-        elif mode == "engineer":
-            self.work(lambda: self.engineer(prompt, model))
         else:
-            self.work(lambda: cli.run_agent_capture(prompt=prompt, model=model))
+            st.started, st.running, st.verb, st.kind = time.time(), True, "starting", "other"
+            self.work(run)
+
+    def start_first(self) -> None:
+        """Once the app is up: the run a subcommand handed over, and the check for a newer rae."""
+        if self.first is not None:
+            (prompt, run), self.first = self.first, None
+            self.launch(prompt, run)
+        if not self.update_checked:
+            self.update_checked = True
+
+            def check() -> None:
+                from ..utils import check_for_updates
+
+                message = check_for_updates()
+                if message:
+                    self.view.notice(message)
+                    self.invalidate()
+
+            threading.Thread(target=check, name="rae-update-check", daemon=True).start()
 
     def engineer(self, text: str, model: str | None) -> dict[str, Any] | None:
         """A known run id re-engineers that run; anything else is an instruction for the latest run."""
@@ -763,7 +789,7 @@ class Session:
         # The SDK warns once that bypassPermissions shadows can_use_tool; it is not for the user.
         warnings.filterwarnings("ignore", message=".*can_use_tool.*")
         try:
-            await self.app.run_async()
+            await self.app.run_async(pre_run=self.start_first)
         finally:
             sys.stdout, sys.stderr = self.real_out, self.real_err
             activate(None)
@@ -779,9 +805,16 @@ class Session:
             console.print(renderable)
 
 
-def run_session() -> None:
-    """Entry point for the interactive CLI: full screen, with stretches in the plain terminal for classic screens."""
+def run_session(mode: str = "agent", model: str | None = None, first: tuple[str, Callable[[], Any]] | None = None) -> None:
+    """Entry point for the interactive CLI: full screen, with stretches in the plain terminal for classic screens.
+
+    ``first`` is a prompt and its run, with every option already bound, that a subcommand hands over.
+    """
     session = Session()
+    session.st.mode = mode
+    if model:
+        session.st.model = model
+    session.first = first
     try:
         while True:
             asyncio.run(session.run())

@@ -4,25 +4,17 @@ import asyncio
 import json
 import logging
 import os
-import random
 import sys
 import time
 import traceback
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, Any, Protocol, TextIO, TypedDict
+from typing import IO, Any, Protocol, TextIO
 
 import click
 import questionary
 import setproctitle
-from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import CompleteEvent, Completer, Completion
-from prompt_toolkit.document import Document
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
-from prompt_toolkit.styles import Style as PtStyle
 from questionary import Choice
 from rich.console import Console
 from rich.markup import escape
@@ -30,21 +22,16 @@ from rich.markup import escape
 from . import __version__
 from .config import DEFAULT_OPENCODE_MODEL, DEFAULT_OPENCODE_PROVIDER, ConfigManager
 from .engineer import run_reverse_engineering
-from .messages import MessageStore
 from .session import SessionManager
 from .tui import (
     ERROR_CTA,
-    MODE_COLORS,
     RETIRED_MODEL_IDS,
     THEME_DIM,
     THEME_PRIMARY,
     THEME_SECONDARY,
-    display_banner,
-    display_footer,
     get_model_choices,
 )
 from .utils import (
-    check_for_updates,
     discover_scripts,
     generate_folder_name,
     generate_run_id,
@@ -60,11 +47,6 @@ from .utils import (
 
 class CliEventEmitter(Protocol):
     def __call__(self, event: str, **fields: Any) -> None: ...
-
-
-class PromptModeState(TypedDict):
-    mode: str
-    mode_index: int
 
 
 setproctitle.setproctitle("reverse-api-engineer")
@@ -757,272 +739,6 @@ def _write_json_event(real_stdout: TextIO, payload: dict) -> None:
     real_stdout.flush()
 
 
-# Mode definitions
-MODES = ["agent", "manual", "engineer", "collector"]
-MODE_DESCRIPTIONS = {
-    "manual": "full pipeline",
-    "engineer": "reverse engineer only",
-    "agent": "autonomous agent + capture",
-    "collector": "ai-powered data collection",
-}
-
-AGENT_TASK_SUGGESTIONS = [
-    "Go to github.com/trending and capture the top 10 trending repos' API calls",
-    "Navigate to news.ycombinator.com, browse the front page and capture API interactions",
-    "Go to weather.com, search for New York weather and capture the forecast API",
-    "Visit reddit.com/r/programming, browse posts and capture the Reddit API calls",
-    "Go to maps.google.com, search for restaurants near Times Square and capture API calls",
-    "Navigate to twitter.com/explore and capture trending topics API interactions",
-    "Go to amazon.com, search for 'mechanical keyboard' and capture product search API",
-    "Visit spotify.com/search, search for an artist and capture the search API",
-    "Navigate to stackoverflow.com, search for 'python async' and capture the search API",
-    "Go to npmjs.com, search for 'express' and capture the package registry API",
-    "Visit producthunt.com and capture the feed/listing API calls",
-    "Go to crunchbase.com and browse company profiles to capture their API",
-    "Navigate to linkedin.com/jobs, search for 'software engineer' and capture job search API",
-    "Go to airbnb.com, search for stays in Paris and capture the listing search API",
-    "Visit imdb.com, search for a movie and capture the title/search API calls",
-    "Go to wolframalpha.com, run a query and capture the computation API",
-    "Navigate to booking.com, search for hotels in Tokyo and capture the search API",
-    "Go to zillow.com, search for homes in San Francisco and capture the listing API",
-    "Visit translate.google.com, translate a paragraph and capture the translation API",
-    "Go to unsplash.com, search for 'mountains' and capture the photo search API",
-]
-
-
-def prompt_interactive_options(  # noqa: C901 — long questionary flow; split when it is next touched
-    prompt: str | None = None,
-    url: str | None = None,
-    reverse_engineer: bool | None = None,
-    model: str | None = None,
-    current_mode: str = "agent",
-) -> dict:
-    """Prompt user for essential options interactively (Browgents style).
-
-    Shift+Tab cycles through modes: manual ↔ engineer ↔ agent
-    """
-
-    # Slash command completer
-    commands = [
-        "/settings",
-        "/history",
-        "/messages",
-        "/resume",
-        "/help",
-        "/exit",
-        "/quit",
-        "/commands",
-    ]
-
-    class EnhancedCompleter(Completer):
-        """Autocomplete for slash commands and run IDs."""
-
-        def get_completions(self, document: Document, complete_event: CompleteEvent) -> Iterable[Completion]:
-            text = document.text_before_cursor
-
-            # Slash command completion
-            if text.startswith("/"):
-                # Check if we're after /messages command
-                if text.startswith("/messages "):
-                    # Run ID completion for /messages
-                    run_id_prefix = text[10:]  # Everything after "/messages "
-                    for run_id in self._get_run_ids():
-                        if run_id.startswith(run_id_prefix):
-                            yield Completion(
-                                run_id,
-                                start_position=-len(run_id_prefix),
-                                display_meta=self._get_run_meta(run_id),
-                            )
-                elif " " not in text:
-                    # Regular slash command completion (no space yet)
-                    for cmd in commands:
-                        if cmd.startswith(text):
-                            yield Completion(cmd, start_position=-len(text))
-            # Run-id completion in engineer mode
-            elif mode_state["mode"] == "engineer" and text:
-                for run_id in self._get_run_ids():
-                    if run_id.startswith(text):
-                        yield Completion(
-                            run_id,
-                            start_position=-len(text),
-                            display_meta=self._get_run_meta(run_id),
-                        )
-
-        def _get_run_ids(self) -> list[str]:
-            """Get all run IDs from history (newest first)."""
-            try:
-                history = session_manager.get_history(limit=50)
-                return [run["run_id"] for run in history]
-            except Exception:
-                return []
-
-        def _get_run_meta(self, run_id: str) -> str:
-            """Get metadata for a run ID (timestamp + prompt snippet)."""
-            try:
-                run = session_manager.get_run(run_id)
-                if run:
-                    timestamp = run.get("timestamp", "")[:16]  # YYYY-MM-DD HH:MM
-                    prompt = run.get("prompt", "")[:30]
-                    return f"[{timestamp}] {prompt}"
-            except Exception:
-                pass
-            return ""
-
-    command_completer = EnhancedCompleter()
-
-    # Track mode state (mutable container for closure)
-    mode_state: PromptModeState = {"mode": current_mode, "mode_index": MODES.index(current_mode)}
-
-    # Create key bindings for mode cycling and autocomplete
-    kb = KeyBindings()
-
-    @kb.add("s-tab")  # Shift+Tab
-    def cycle_mode(event: KeyPressEvent) -> None:
-        """Cycle to next mode."""
-        mode_state["mode_index"] = (mode_state["mode_index"] + 1) % len(MODES)
-        mode_state["mode"] = MODES[mode_state["mode_index"]]
-        # Force prompt refresh by invalidating the app
-        event.app.invalidate()
-
-    @kb.add("right")  # Right arrow
-    def accept_completion(event: KeyPressEvent) -> None:
-        """Accept the current autocomplete suggestion with right arrow."""
-        buff = event.app.current_buffer
-        if buff.complete_state:
-            # Save the current completion before closing
-            completion = buff.complete_state.current_completion
-            if completion:
-                buff.apply_completion(completion)
-            else:
-                # No completion selected, just move cursor right
-                buff.cursor_right()
-        else:
-            # If no completion, just move cursor right
-            buff.cursor_right()
-
-    @kb.add("c-r")  # Ctrl+R: random task suggestion (agent mode)
-    def random_suggestion(event: KeyPressEvent) -> None:
-        """Fill prompt with a random task suggestion for agent mode."""
-        if mode_state["mode"] == "agent":
-            suggestion = random.choice(AGENT_TASK_SUGGESTIONS)
-            buff = event.app.current_buffer
-            buff.text = suggestion
-            buff.cursor_position = len(suggestion)
-
-    def get_prompt() -> HTML:
-        """Generate prompt with current mode indicator."""
-        mode = mode_state["mode"]
-        mode_color = MODE_COLORS.get(mode, THEME_PRIMARY)
-
-        return HTML(f'<style fg="{mode_color}">[{mode}]</style> <style fg="{mode_color}" bold="true">&gt;</style> ')
-
-    if prompt is None:
-        pt_style = PtStyle.from_dict(
-            {
-                "prompt": f"{THEME_PRIMARY} bold",
-                "": THEME_SECONDARY,
-            }
-        )
-
-        session: PromptSession[str] = PromptSession(
-            message=get_prompt,  # Dynamic prompt function
-            completer=command_completer,
-            auto_suggest=AutoSuggestFromHistory(),
-            complete_while_typing=True,
-            style=pt_style,
-            key_bindings=kb,
-        )
-
-        prompt = session.prompt()
-
-    if prompt is None:  # Handle Ctrl+D or Ctrl+C if not caught
-        raise click.Abort()
-
-    prompt = prompt.strip()
-    if not prompt:
-        return {"command": "/empty", "mode": mode_state["mode"]}
-
-    if prompt.startswith("/"):
-        return {"command": prompt.lower(), "mode": mode_state["mode"]}
-
-    # Return mode in all cases
-    result_mode = mode_state["mode"]
-
-    # Engineer mode: prompt is the run_id
-    if result_mode == "engineer":
-        _sdk = config_manager.get("sdk", "claude")
-        resolved = model or default_model_for_configured_sdk(_sdk)
-        return {
-            "mode": result_mode,
-            "run_id": prompt,
-            "model": resolved,
-        }
-
-    # Agent mode: autonomous browser, no URL needed (agent navigates on its own)
-    if result_mode == "agent":
-        if model is None:
-            _sdk = config_manager.get("sdk", "claude")
-            model = default_model_for_configured_sdk(_sdk)
-
-        mode_color = MODE_COLORS.get("agent", THEME_PRIMARY)
-        console = Console()
-        console.print(f"  [{mode_color}]autonomous[/{mode_color}] [dim]agent will navigate on its own[/dim]")
-
-        return {
-            "mode": result_mode,
-            "prompt": prompt,
-            "url": url if url else None,
-            "reverse_engineer": False,  # Agent mode doesn't auto-reverse engineer
-            "model": model,
-        }
-
-    # Collector mode: just needs prompt
-    if result_mode == "collector":
-        if model is None:
-            model = config_manager.get("collector_model", "claude-sonnet-4-6")
-
-        return {
-            "mode": result_mode,
-            "prompt": prompt,
-            "model": model,
-        }
-
-    # Manual mode: need URL
-    if url is None:
-        try:
-            url = questionary.text(
-                " > url",
-                instruction="(Enter for none)",
-                qmark="",
-                style=questionary.Style(
-                    [
-                        ("question", f"fg:{THEME_SECONDARY}"),
-                        ("instruction", f"fg:{THEME_DIM} italic"),
-                    ]
-                ),
-            ).ask()
-            if url is None:  # questionary returns None on Ctrl+C
-                raise click.Abort()
-        except KeyboardInterrupt:
-            raise click.Abort() from None
-
-    # Use settings defaults for the rest
-    if reverse_engineer is None:
-        reverse_engineer = True
-
-    if model is None:
-        _sdk = config_manager.get("sdk", "claude")
-        model = default_model_for_configured_sdk(_sdk)
-
-    return {
-        "mode": result_mode,
-        "prompt": prompt,
-        "url": url if url else None,
-        "reverse_engineer": reverse_engineer,
-        "model": model,
-    }
-
-
 CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 
 
@@ -1038,8 +754,9 @@ CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 def main(ctx: click.Context, show_schema_version: bool) -> None:
     """reverse-api-engineer: reverse engineer apis.
 
-    Run without a subcommand to start the interactive REPL; use agent, manual,
-    engineer, or collector mode interactively.
+    Run without a subcommand to open the interactive session (agent, manual,
+    engineer and collector modes); in a terminal, agent, engineer and collector
+    open it too.
 
     Scripted flags are subcommand-specific: agent, engineer, and run support
     --json, --json-stream, and --no-interactive; list/show support --json.
@@ -1053,154 +770,29 @@ def main(ctx: click.Context, show_schema_version: bool) -> None:
         ctx.exit(0)
 
     if ctx.invoked_subcommand is None:
-        # Refuse to drop into the prompt_toolkit REPL when stdin is not a TTY:
-        # without an interactive terminal the REPL would block on stdin
-        # forever (e.g. CI invocations, agent wrappers that forgot the
-        # subcommand). Print --help to stderr and exit 2 (misuse).
-        if not sys.stdin.isatty():
+        # The session needs a terminal; without one (CI, agent wrappers that forgot the
+        # subcommand) it would block on stdin forever, so print --help and exit 2 (misuse).
+        if not _in_terminal():
             click.echo(ctx.get_help(), err=True)
+            stream = "stdin" if not sys.stdin.isatty() else "stdout"
             click.echo(
-                "\nerror: no subcommand given and stdin is not a TTY; "
-                "the interactive REPL requires a terminal.",
+                f"\nerror: no subcommand given and {stream} is not a TTY; "
+                "the interactive session requires a terminal.",
                 err=True,
             )
             sys.exit(2)
-        repl_loop()
+        open_session()
 
 
-def repl_loop() -> None:
-    """Main interactive loop for the CLI."""
-    from concurrent.futures import ThreadPoolExecutor
+def _in_terminal() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
-    # The full-screen session needs a real terminal; RAE_UI=classic keeps the line-by-line one.
-    if os.environ.get("RAE_UI", "").lower() != "classic" and sys.stdin.isatty() and sys.stdout.isatty():
-        from .repl.app import run_session
 
-        run_session()
-        return
+def open_session(mode: str = "agent", model: str | None = None, prompt: str | None = None, run: Callable[[], Any] | None = None) -> None:
+    """The interactive CLI: the full-screen session, in ``mode``, starting ``run`` for ``prompt`` when a subcommand hands one over."""
+    from .repl.app import run_session
 
-    # Start update check in background to avoid blocking startup
-    update_executor = ThreadPoolExecutor(max_workers=1)
-    update_future = update_executor.submit(check_for_updates)
-
-    # Get current SDK and model from config
-    sdk = config_manager.get("sdk", "claude")
-    model = default_model_for_configured_sdk(sdk)
-
-    display_banner(console, sdk=sdk, model=model)
-    console.print("  [dim]shift+tab to cycle modes | ctrl+r for random task (agent)[/dim]")
-    display_footer(console)
-
-    # Show update message if background check has completed
-    try:
-        update_msg = update_future.result(timeout=0.5)
-        if update_msg:
-            console.print(f"  [yellow]{update_msg}[/yellow]")
-            console.print()
-    except Exception:
-        pass  # Timed out or failed — don't block startup
-    finally:
-        update_executor.shutdown(wait=False)
-
-    current_mode = "agent"
-
-    while True:
-        try:
-            options = prompt_interactive_options(current_mode=current_mode)
-
-            # Update current mode for next iteration
-            current_mode = options.get("mode", "agent")
-
-            if "command" in options:
-                cmd = options["command"]
-                mode_color = MODE_COLORS.get(current_mode, THEME_PRIMARY)
-
-                if cmd == "/empty":
-                    continue
-                if cmd == "/exit" or cmd == "/quit":
-                    return  # Exit the loop and return to main
-                elif cmd == "/settings":
-                    handle_settings(mode_color)
-                elif cmd == "/history":
-                    handle_history(mode_color)
-                elif cmd == "/help" or cmd == "/commands":
-                    handle_help(mode_color)
-                elif cmd.startswith("/messages"):
-                    parts = cmd.split(maxsplit=1)
-                    if len(parts) > 1:
-                        handle_messages(parts[1].strip(), mode_color)
-                    else:
-                        console.print(" [red]usage:[/red] /messages <run_id>")
-                elif cmd == "/resume" or cmd.startswith("/resume "):
-                    handle_resume(cmd.removeprefix("/resume").strip(), mode_color)
-                else:
-                    # Unknown command - show error and available commands
-                    console.print(f" [red]Unknown command:[/red] {cmd}")
-                    console.print(" [dim]Available commands: /settings, /history, /messages, /resume, /help, /commands, /exit[/dim]")
-                continue
-
-            mode = options.get("mode", "agent")
-
-            # Handle different modes
-            if mode == "engineer":
-                raw_input = options.get("run_id")
-
-                if not raw_input:
-                    console.print(" [dim]Usage:[/dim] <run_id> (switch context)")
-                    console.print(" [dim]       [/dim] <prompt> (re-engineer the latest run)")
-                    continue
-
-                # Two cases: input matches a known run_id (switch context) or
-                # it's free text (additive instructions on the latest run).
-                if session_manager.get_run(raw_input):
-                    target_run_id = raw_input
-                    add_instr = None
-                else:
-                    latest = session_manager.get_history(limit=1)
-                    if not latest:
-                        console.print(" [red]error:[/red] no runs found in history")
-                        continue
-                    target_run_id = latest[0]["run_id"]
-                    add_instr = raw_input
-
-                run_engineer(
-                    target_run_id,
-                    model=options.get("model"),
-                    additional_instructions=add_instr,
-                )
-                continue
-
-            if mode == "agent":
-                # Agent mode: run autonomous browser agent
-                run_agent_capture(
-                    prompt=options["prompt"],
-                    url=options.get("url"),
-                    model=options.get("model"),
-                )
-                continue
-
-            if mode == "collector":
-                # Collector mode: AI-powered data collection
-                run_collector(
-                    prompt=options["prompt"],
-                    model=options.get("model"),
-                )
-                continue
-
-            # Manual mode: run browser capture
-            run_manual_capture(
-                prompt=options["prompt"],
-                url=options["url"],
-                reverse_engineer=options["reverse_engineer"],
-                model=options["model"],
-            )
-
-        except (click.Abort, KeyboardInterrupt):
-            console.print("\n [dim]terminated[/dim]")
-            return
-        except Exception as e:
-            console.print(f" [red]error:[/red] {escape(str(e))}")
-            console.print(f" [dim]{ERROR_CTA}[/dim]")
+    run_session(mode=mode, model=model, first=(prompt, run) if prompt and run else None)
 
 
 def handle_settings(mode_color: str = THEME_PRIMARY) -> None:
@@ -1510,219 +1102,6 @@ def _handle_settings_action(mode_color: str = THEME_PRIMARY) -> bool:  # noqa: C
     return True
 
 
-def handle_history(mode_color: str = THEME_PRIMARY) -> None:
-    """Display history of runs."""
-    history = session_manager.get_history(limit=15)
-    if not history:
-        console.print(" [dim]> no logs found[/dim]")
-        return
-
-    choices = []
-    for run in history:
-        cost = run.get("usage", {}).get("estimated_cost_usd", 0)
-        cost_str = f"${cost:.3f}" if cost > 0 else "-"
-        title = f"{run['run_id']:12}  {run['prompt'][:40]:40}  {cost_str:>8}"
-        choices.append(Choice(title=title, value=run["run_id"]))
-
-    choices.append(Choice(title="back", value="back"))
-
-    run_id = questionary.select(
-        "",
-        choices=choices,
-        pointer=">",
-        qmark="",
-        style=questionary.Style(
-            [
-                ("pointer", f"fg:{mode_color} bold"),
-                ("highlighted", f"fg:{mode_color} bold"),
-                ("selected", "fg:white"),
-            ]
-        ),
-    ).ask()
-
-    if not run_id or run_id == "back":
-        return
-
-    selected_run = session_manager.get_run(run_id)
-    if selected_run:
-        run = selected_run
-        from rich.table import Table
-
-        # Create a formatted display of the run details
-        details_table = Table(show_header=False, box=None, padding=(0, 1))
-        details_table.add_column(style="dim", justify="left", width=20)
-        details_table.add_column(style="white", justify="left")
-
-        details_table.add_row("Run ID", run.get("run_id", "-"))
-        details_table.add_row("Timestamp", run.get("timestamp", "-"))
-        details_table.add_row("Prompt", run.get("prompt", "-"))
-        details_table.add_row("Model", run.get("model", "-"))
-        details_table.add_row("Mode", run.get("mode", "-"))
-
-        usage = run.get("usage", {})
-        if usage:
-            cost = usage.get("estimated_cost_usd", 0)
-            details_table.add_row("Cost", f"${cost:.4f}" if cost > 0 else "-")
-            input_tokens = usage.get("input_tokens", 0)
-            output_tokens = usage.get("output_tokens", 0)
-            if input_tokens or output_tokens:
-                details_table.add_row("Tokens", f"{input_tokens:,} in / {output_tokens:,} out")
-
-        console.print()
-        console.print(" [bold white]Run Details[/bold white]")
-        console.print(details_table)
-        console.print()
-
-        if questionary.confirm(" > recode?", qmark="").ask():
-            model = run.get("model") or config_manager.get("claude_code_model", "claude-sonnet-4-6")
-            run_engineer(run_id, model=model)
-    else:
-        console.print(" [dim]> not found[/dim]")
-
-
-def handle_resume(run_id: str, mode_color: str = THEME_PRIMARY) -> None:
-    """Continue a past run's conversation: the one named, or one picked from the runs that can be resumed."""
-    if not run_id:
-        runs = [r for r in session_manager.history if resumable(r)][:15]
-        if not runs:
-            console.print(" [dim]> no run can be resumed yet · runs from now on can[/dim]")
-            return
-        choices = [Choice(title=f"{r['run_id']:12}  {r['prompt'][:40]:40}", value=r["run_id"]) for r in runs]
-        choices.append(Choice(title="back", value="back"))
-        picked = questionary.select(
-            "",
-            choices=choices,
-            pointer=">",
-            qmark="",
-            style=questionary.Style([("pointer", f"fg:{mode_color} bold"), ("highlighted", f"fg:{mode_color} bold"), ("selected", "fg:white")]),
-        ).ask()
-        if not picked or picked == "back":
-            return
-        run_id = picked
-    resume_run(run_id)
-
-
-def handle_help(mode_color: str = THEME_PRIMARY) -> None:
-    """Show enhanced help with command details and examples."""
-    from rich.table import Table
-
-    console.print()
-
-    # Commands table
-    commands_table = Table(show_header=False, box=None, padding=(0, 1))
-    commands_table.add_column(style=f"{mode_color} bold", justify="left", width=20)
-    commands_table.add_column(style="white", justify="left")
-
-    commands_table.add_row(
-        "/settings",
-        "Configure model, SDK, agent provider, and sync settings\n[dim]Usage: /settings[/dim]",
-    )
-    commands_table.add_row("", "")  # Spacing
-
-    commands_table.add_row(
-        "/history",
-        "View past runs with timestamps, costs, and status\n[dim]Usage: /history[/dim]",
-    )
-    commands_table.add_row("", "")
-
-    commands_table.add_row(
-        "/messages <run_id>",
-        "View detailed message logs from a specific run\n[dim]Usage: /messages abc123[/dim]",
-    )
-    commands_table.add_row("", "")
-
-    commands_table.add_row(
-        "/resume [run_id]",
-        "Continue a past run's conversation where it stopped\n[dim]Usage: /resume or /resume abc123[/dim]",
-    )
-    commands_table.add_row("", "")
-
-    commands_table.add_row(
-        "/help or /commands",
-        "Show this help message\n[dim]Usage: /help[/dim]",
-    )
-    commands_table.add_row("", "")
-
-    commands_table.add_row("/exit or /quit", "Exit the application\n[dim]Usage: /exit[/dim]")
-
-    console.print(" [bold white]Available Commands[/bold white]")
-    console.print(commands_table)
-
-    # Modes table
-    console.print()
-    modes_table = Table(show_header=False, box=None, padding=(0, 1))
-    modes_table.add_column(style=f"{mode_color} bold", justify="left", width=15)
-    modes_table.add_column(style="dim", justify="left")
-
-    modes_table.add_row("agent", "Autonomous agent + capture")
-    modes_table.add_row("manual", "Full pipeline: browser + reverse engineering")
-    modes_table.add_row("engineer", "Reverse engineer only (enter run_id)")
-    modes_table.add_row("collector", "AI-powered data collection")
-
-    console.print(" [bold white]Modes[/bold white] [dim]Shift+Tab to cycle[/dim]")
-    console.print(modes_table)
-    console.print()
-
-
-def handle_messages(run_id: str, mode_color: str = THEME_PRIMARY) -> None:
-    """Display messages from a previous run."""
-    from rich.table import Table
-
-    store = MessageStore(run_id)
-    messages = store.load()
-
-    if not messages:
-        console.print(f" [dim]>[/dim] [red]no messages found for run:[/red] {run_id}")
-        return
-
-    # Create header panel
-    header_table = Table(show_header=False, box=None, padding=(0, 0))
-    header_table.add_column(style="white", justify="left")
-    header_table.add_row(f"Run ID: {run_id}")
-    header_table.add_row(f"Total Messages: {len(messages)}")
-
-    console.print()
-    console.print(" [bold white]Message Log[/bold white]")
-    console.print(header_table)
-    console.print()
-
-    for msg in messages:
-        msg_type = msg.get("type", "unknown")
-        content = msg.get("content", "")
-        timestamp = msg.get("timestamp", "")[:19]  # Truncate to datetime
-
-        if msg_type == "prompt":
-            console.print(f" [dim]{timestamp}[/dim] [white]prompt[/white]")
-            # Show first 200 chars of prompt
-            display = str(content)[:200]
-            if len(str(content)) > 200:
-                display += "..."
-            console.print(f"   [dim]{display}[/dim]")
-        elif msg_type == "tool_start":
-            name = content.get("name", "tool")
-            console.print(f" [dim]{timestamp}[/dim] [white]{name.lower()}[/white]")
-        elif msg_type == "tool_result":
-            name = content.get("name", "tool")
-            is_error = content.get("is_error", False)
-            status = "[red]error[/red]" if is_error else "[dim]ok[/dim]"
-            console.print(f" [dim]{timestamp}[/dim]   {status}")
-        elif msg_type == "thinking":
-            display = str(content)[:100].replace("\\n", " ")
-            if len(str(content)) > 100:
-                display += "..."
-            console.print(f" [dim]{timestamp}  .. {display}[/dim]")
-        elif msg_type == "error":
-            console.print(f" [dim]{timestamp}[/dim] [red]error: {escape(str(content))}[/red]")
-        elif msg_type == "result":
-            console.print(f" [dim]{timestamp}[/dim] [white]complete[/white]")
-            if isinstance(content, dict):
-                script_path = content.get("script_path", "")
-                if script_path:
-                    console.print(f"   [dim]{script_path}[/dim]")
-
-    console.print()
-
-
 @main.command(
     epilog="""\b
 Examples:
@@ -1852,6 +1231,18 @@ def agent(
     # otherwise block on stdin (`input("  > ")`) inside ClaudeAutoEngineer.
     interactive = not no_interactive
 
+    if interactive and _in_terminal():
+        open_session(
+            "agent",
+            model,
+            prompt,
+            lambda: run_agent_capture(prompt=prompt, url=url, model=model, output_dir=output_dir, headless=headless),
+        )
+        return
+    if not (prompt and prompt.strip()):
+        click.echo("error: --prompt is required outside a terminal", err=True)
+        sys.exit(2)
+
     if not machine_output:
         result = run_agent_capture(
             prompt=prompt,
@@ -1920,19 +1311,12 @@ Examples:
 @click.option("--output-dir", "-o", default=None, help="Custom output directory for run metadata and messages.")
 def collector(prompt: str | None, model: str | None, output_dir: str | None) -> None:
     """Run AI-powered data collection."""
-    if prompt is None:
-        if not sys.stdin.isatty():
-            click.echo("error: --prompt is required when stdin is not a TTY", err=True)
-            sys.exit(2)
-        options = prompt_interactive_options(
-            prompt=None,
-            model=model,
-            current_mode="collector",
-        )
-        if "command" in options:
-            return
-        prompt = options["prompt"]
-        model = options.get("model") or model
+    if _in_terminal():
+        open_session("collector", model, prompt, lambda: run_collector(prompt=prompt, model=model, output_dir=output_dir))
+        return
+    if not prompt:
+        click.echo("error: --prompt is required outside a terminal", err=True)
+        sys.exit(2)
 
     result = run_collector(prompt=prompt, model=model, output_dir=output_dir)
     if result is None or (isinstance(result, dict) and result.get("error")):
@@ -1963,19 +1347,8 @@ def run_manual_capture(
             "(Agent mode does not need this.)"
         ) from exc
 
-    if prompt is None:
-        options = prompt_interactive_options(
-            prompt=prompt,
-            url=url,
-            reverse_engineer=reverse_engineer,
-            model=model,
-        )
-        if "command" in options:
-            return  # Should not happen from here
-        prompt = options["prompt"]
-        url = options["url"]
-        reverse_engineer = options["reverse_engineer"]
-        model = options["model"]
+    if not prompt:
+        raise click.UsageError("a prompt is required")
 
     run_id = generate_run_id()
     timestamp = get_timestamp()
@@ -2029,19 +1402,8 @@ def run_agent_capture(
 ) -> dict[str, Any] | None:
     """Shared logic for agent capture mode."""
     output_dir = output_dir or config_manager.get("output_dir")
-
-    if prompt is None:
-        options = prompt_interactive_options(
-            prompt=prompt,
-            url=url,
-            reverse_engineer=False,
-            model=model,
-        )
-        if "command" in options:
-            return None
-        prompt = options["prompt"]
-        url = options["url"]
-        model = options["model"]
+    if not prompt:
+        raise click.UsageError("a prompt is required")
 
     agent_provider = config_manager.get("agent_provider", "auto")
     return run_auto_capture(
@@ -2140,19 +1502,8 @@ def run_auto_capture(
     ``resume`` is a past run's history entry: the run reopens its SDK session instead of starting one.
     """
     output_dir = output_dir or config_manager.get("output_dir")
-
-    if prompt is None:
-        options = prompt_interactive_options(
-            prompt=prompt,
-            url=url,
-            reverse_engineer=False,
-            model=model,
-        )
-        if "command" in options:
-            return None
-        prompt = options["prompt"]
-        url = options.get("url")
-        model = options["model"]
+    if not prompt:
+        raise click.UsageError("a prompt is required")
 
     session_note = _session_browser_note(agent_provider, headless)
     if session_note:
@@ -2497,6 +1848,16 @@ def engineer(
     interactive = not no_interactive
     machine_output = as_json or json_stream
 
+    if interactive and _in_terminal():
+        open_session(
+            "engineer",
+            model,
+            prompt or run_id,
+            lambda: run_engineer(
+                run_id, prompt=main_prompt, additional_instructions=additional, model=model, output_dir=output_dir, is_fresh=fresh
+            ),
+        )
+        return
     if not machine_output:
         run_engineer(
             run_id,
