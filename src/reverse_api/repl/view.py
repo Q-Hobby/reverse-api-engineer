@@ -23,6 +23,7 @@ from rich.text import Text
 
 from .. import __version__
 from ..theme import MODE_COLORS
+from ..utils import predates_effort
 from .logo import LOGO_COLS, logo_rows
 from .style import (
     AMBER,
@@ -239,8 +240,8 @@ class SessionState:
 
     @property
     def has_effort(self) -> bool:
-        """Effort is a Claude setting, which Haiku 4.5 predates; collector mode goes by its own model."""
-        return self.sdk == "claude" and not (self.next_model or "").startswith("claude-haiku-4")
+        """Effort is a Claude setting; collector mode goes by its own model."""
+        return self.sdk == "claude" and not predates_effort(self.next_model)
 
     @property
     def next_model(self) -> str | None:

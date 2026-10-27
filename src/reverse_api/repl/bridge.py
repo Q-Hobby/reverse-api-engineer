@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from rich.console import Console
 
+from ..utils import predates_effort
 from .style import THEME, width
 from .transcript import Raw, TranscriptWriter
 from .view import KIND_VERB, LedgerView, default_effort, language_for
@@ -205,7 +206,7 @@ class LedgerUI:
         self.b.verified = False
         # The run's own model and SDK; the selection in st.model stays for the next run.
         st.run_model, st.run_sdk = model or st.model, sdk or st.sdk
-        claude = st.run_sdk == "claude" and not (st.run_model or "").startswith("claude-haiku-4")
+        claude = st.run_sdk == "claude" and not predates_effort(st.run_model)
         st.run_effort = (st.effort or default_effort(st.run_model)) if claude else None
         self.view.run_line(run_id, mode)
         self._changed()
