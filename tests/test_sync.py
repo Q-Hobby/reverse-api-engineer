@@ -2,8 +2,10 @@
 
 import os
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from watchdog.events import FileCreatedEvent, FileDeletedEvent, FileModifiedEvent
 
 from reverse_api.sync import (
@@ -60,6 +62,32 @@ class TestSyncHandler:
         assert handler._is_temporary_file("/path/to/~temp") is True
         assert handler._is_temporary_file("/path/to/file.py") is False
         assert handler._is_temporary_file("/path/to/file.txt") is False
+
+    def test_a_symlinked_folder_syncs_events_named_by_the_real_path(self, tmp_path):
+        """macOS reports /private/var/... for a folder watched as /var/...."""
+        real = tmp_path / "real"
+        real.mkdir()
+        try:
+            (tmp_path / "link").symlink_to(real, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlinks need extra rights here")
+        source, dest = tmp_path / "link", tmp_path / "dest"
+        (real / "api_client.py").write_text("x = 1\n", encoding="utf-8")
+        handler = SyncHandler(source, dest)
+        handler._sync_file(str((real / "api_client.py").resolve()))
+        assert (dest / "api_client.py").read_text(encoding="utf-8") == "x = 1\n"
+
+    def test_a_file_that_is_a_symlink_syncs_as_itself_not_its_target(self, tmp_path):
+        real = tmp_path / "real"
+        real.mkdir()
+        try:
+            (tmp_path / "link").symlink_to(real, target_is_directory=True)
+            (real / "alias.py").symlink_to(tmp_path / "elsewhere.py")
+        except OSError:
+            pytest.skip("symlinks need extra rights here")
+        handler = SyncHandler(tmp_path / "link", tmp_path / "dest")
+        # The event names the file by its real folder; the file itself must not be followed to its target.
+        assert handler._relative(real.resolve() / "alias.py") == Path("alias.py")
 
     def test_is_temporary_file_tmp_in_middle(self, tmp_path):
         """Files with .tmp. in the middle are temporary."""

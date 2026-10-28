@@ -6,10 +6,12 @@ import shlex
 import subprocess
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import questionary
+from rich.markup import escape
 
 from .messages import MessageStore
 from .opencode_ui import OpenCodeUI
@@ -73,6 +75,35 @@ class BaseEngineer(ABC):
     # script discovery and the run command dispatch stay in sync with codegen.
     _OUTPUT_LANGUAGE_EXTENSIONS = OUTPUT_LANGUAGE_EXTENSIONS
 
+    # The run's SDK session (a Claude, Copilot or OpenCode session, a Cursor agent), kept so /resume can
+    # reopen it. With resume_session set the run reopens that session and starts from the user's next
+    # message. cost_before is what the run spent earlier, for an SDK whose cost counts the whole session.
+    sdk_session_id: str | None = None
+    resume_session: str | None = None
+    cost_before = 0.0
+    on_session: Callable[[str], None] | None = None
+
+    def _record_session(self, sid: Any) -> None:
+        # A reopened session is already on the run, with its cost so far; recording it again would reset that.
+        if isinstance(sid, str) and sid and sid not in (self.sdk_session_id, self.resume_session):
+            self.sdk_session_id = sid
+            if self.on_session is not None:
+                self.on_session(sid)
+
+    def _report_usage(self) -> None:
+        """Gives the full-screen session the run's tokens and cost, for its spend chip and card."""
+        from .repl.bridge import LedgerUI
+
+        if isinstance(self.ui, LedgerUI):
+            self.ui.usage(self.usage_metadata)
+
+    async def _opening_message(self, brief: str) -> str | None:
+        """The first message of the run: its brief, or when resuming, the user's next message."""
+        message = await self._prompt_follow_up() if self.resume_session else brief
+        if message:
+            self.message_store.save_prompt(message)
+        return message
+
     def __init__(
         self,
         run_id: str,
@@ -102,8 +133,12 @@ class BaseEngineer(ABC):
         else:
             self.scripts_dir = get_scripts_dir(run_id, output_dir)
 
-        self.ui: ClaudeUI | OpenCodeUI = ClaudeUI(verbose=verbose)
+        from .repl.bridge import active
+
+        bridge = active()
+        self.ui: ClaudeUI | OpenCodeUI = bridge.ui() if bridge else ClaudeUI(verbose=verbose)  # type: ignore[assignment]
         self.usage_metadata: dict[str, Any] = {}
+        self._tool_names: dict[str, str] = {}  # tool_use_id to tool name, to label results
         self.message_store = MessageStore(run_id, output_dir)
         self.enable_sync = enable_sync
         self.sdk = sdk
@@ -134,7 +169,7 @@ class BaseEngineer(ABC):
     def _handle_cli_stderr(self, line: str) -> None:
         """Filter CLI subprocess stderr. Shows full output in DEBUG mode, otherwise shows a single clean error."""
         if DEBUG:
-            self.ui.console.print(f"[dim]  stderr: {line.rstrip()}[/dim]")
+            self.ui.console.print(f"[dim]  stderr: {escape(line.rstrip())}[/dim]")
             return
 
         # Known noisy errors from the CLI control protocol — show once
@@ -235,6 +270,12 @@ class BaseEngineer(ABC):
         Returns:
             Dict mapping question text to user's answer string.
         """
+        from .repl.bridge import active
+
+        bridge = active()
+        if bridge is not None:
+            return await bridge.ask(questions)
+
         answers: dict[str, str] = {}
 
         self.ui.console.print()
@@ -251,7 +292,7 @@ class BaseEngineer(ABC):
                 continue
 
             if header:
-                self.ui.console.print(f"  [dim]{header}[/dim]")
+                self.ui.console.print(f"  [dim]{escape(str(header))}[/dim]")
 
             try:
                 if multi_select:
@@ -349,7 +390,7 @@ class BaseEngineer(ABC):
                             raise KeyboardInterrupt
                         answers[question_text] = answer.strip()
 
-                self.ui.console.print(f"  [dim]→ {answers[question_text]}[/dim]")
+                self.ui.console.print(f"  [dim]→ {escape(str(answers[question_text]))}[/dim]")
 
             except KeyboardInterrupt:
                 self.ui.console.print("  [dim]User cancelled question[/dim]")
@@ -373,6 +414,11 @@ class BaseEngineer(ABC):
             return None
         # Ensure all files are synced locally before waiting for user input
         self.flush_sync()
+        from .repl.bridge import active
+
+        bridge = active()
+        if bridge is not None:
+            return await bridge.follow_up()
         self.ui.console.print()
         self.ui.console.print(f"  [{THEME_PRIMARY}]─[/{THEME_PRIMARY}] [dim]type a follow-up or press Enter to finish[/dim]")
         try:

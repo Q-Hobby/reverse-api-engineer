@@ -1,5 +1,6 @@
 """Configuration management for reverse-api."""
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -7,11 +8,17 @@ from typing import Any
 DEFAULT_OPENCODE_PROVIDER = "opencode"
 DEFAULT_OPENCODE_MODEL = "big-pickle"
 
-DEFAULT_CONFIG = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "agent_provider": "chrome-mcp",  # "chrome-mcp" | "auto" (Playwright MCP) | "agent-browser"
     "agent_browser_notes": "",  # extra instructions merged into agent-browser prompt / RAE_AGENT_BROWSER_NOTES env
     "agent_browser_npx_package": "agent-browser@0",
     "claude_code_model": "claude-sonnet-4-6",
+    # Claude Code setting layers ("user", "project", "local") loaded into Claude SDK sessions.
+    # [] isolates the agent from the user's own CLAUDE.md, hooks, plugins and MCP servers.
+    "claude_setting_sources": [],
+    # Effort for Claude agent, engineer and collector sessions: "low" | "medium" | "high" | "xhigh" | "max".
+    # None keeps each model's default (Opus 5.5 and Haiku 5.5 default to "medium", the others to "high").
+    "claude_effort": None,
     "collector_model": "claude-sonnet-4-6",  # Model for collector mode
     "cursor_model": "composer-2.5",  # Model id for Cursor SDK (see Cursor.models.list())
     # When True, local agents load broader Cursor setting layers (plugins/team) so WebFetch/WebSearch
@@ -39,7 +46,7 @@ class ConfigManager:
 
     def __init__(self, config_path: Path) -> None:
         self.config_path = config_path
-        self.config = DEFAULT_CONFIG.copy()
+        self.config = copy.deepcopy(DEFAULT_CONFIG)  # list defaults must not be shared between instances
         self.load()
 
     def load(self) -> None:

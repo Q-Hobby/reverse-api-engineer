@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx2 as httpx
+from rich.markup import escape
 
 from .base_engineer import BaseEngineer
 from .config import DEFAULT_OPENCODE_MODEL, DEFAULT_OPENCODE_PROVIDER
@@ -43,8 +44,8 @@ def debug_log(msg: str) -> None:
 
 def format_error(e: Exception) -> str:
     """Format exception with full details in a pretty, readable format."""
-    error_type = type(e).__name__
-    error_msg = str(e)
+    error_type = escape(type(e).__name__)
+    error_msg = escape(str(e))
 
     # Build comprehensive error message with pretty formatting
     lines = []
@@ -61,7 +62,7 @@ def format_error(e: Exception) -> str:
         if hasattr(e, "response") and e.response is not None:
             try:
                 status_code = e.response.status_code
-                status_text = e.response.reason_phrase or "Unknown"
+                status_text = escape(e.response.reason_phrase or "Unknown")
                 lines.append(f"\n[dim]HTTP Status:[/dim] [yellow]{status_code}[/yellow] {status_text}")
 
                 # Try to parse JSON response for better formatting
@@ -73,13 +74,13 @@ def format_error(e: Exception) -> str:
                     lines.append("\n[dim]Response Body:[/dim]")
                     # Split into lines and indent
                     for line in response_text.split("\n"):
-                        lines.append(f"  [dim]{line}[/dim]")
+                        lines.append(f"  [dim]{escape(line)}[/dim]")
                 except Exception:
                     # Fall back to text if not JSON
                     response_text = e.response.text[:500]
                     if response_text:
                         lines.append("\n[dim]Response Body:[/dim]")
-                        lines.append(f"  [dim]{response_text}[/dim]")
+                        lines.append(f"  [dim]{escape(response_text)}[/dim]")
             except Exception:
                 pass
 
@@ -105,7 +106,7 @@ def format_error(e: Exception) -> str:
         tb_str = "".join(traceback.format_exception(type(e), e, e.__traceback__))
         lines.append("\n[dim]Traceback:[/dim]")
         for line in tb_str.split("\n"):
-            lines.append(f"  [dim]{line}[/dim]")
+            lines.append(f"  [dim]{escape(line)}[/dim]")
 
     return "\n".join(lines)
 
@@ -192,14 +193,29 @@ class OpenCodeEngineer(BaseEngineer):
             self.opencode_ui.console.print("\n[dim]RAE can auto-start OpenCode when Node.js and npx are available.[/dim]")
             return False
 
+    async def _open_session(self, client: httpx.AsyncClient) -> str:
+        """The run's OpenCode session: the saved one when resuming (the server keeps sessions on disk), else a new one."""
+        if self.resume_session:
+            r = await client.get(f"/session/{self.resume_session}")
+            r.raise_for_status()
+            sid = str(self.resume_session)
+        else:
+            r = await client.post("/session", json={})
+            r.raise_for_status()
+            sid = str(r.json()["id"])
+        self._record_session(sid)
+        return sid
+
     async def analyze_and_generate(self) -> dict[str, Any] | None:
         """Run the reverse engineering analysis with OpenCode."""
         self.opencode_ui.header(self.run_id, self.prompt, self.opencode_model, self.sdk, mode="engineer")
         self.opencode_ui.start_analysis()
 
         system_prompt, user_message = self._build_prompts()
-        combined_prompt = f"{system_prompt}\n\n{user_message}"
-        self.message_store.save_prompt(user_message)
+        opening = await self._opening_message(user_message)
+        if not opening:
+            return {}
+        combined_prompt = opening if self.resume_session else f"{system_prompt}\n\n{user_message}"
 
         try:
             auth = self._get_auth()
@@ -207,12 +223,7 @@ class OpenCodeEngineer(BaseEngineer):
                 if not await self._prepare_server(client):
                     return None
 
-                # Create a new session
-                r = await client.post("/session", json={})
-                r.raise_for_status()
-                session_data = r.json()
-                self._session_id = session_data["id"]
-
+                self._session_id = await self._open_session(client)
                 self.opencode_ui.session_created(self._session_id)
 
                 # Start event stream BEFORE sending message
@@ -308,7 +319,7 @@ class OpenCodeEngineer(BaseEngineer):
             error_msg = format_error(e)
             debug_log(f"ConnectError in analyze_and_generate: {error_msg}")
             self.opencode_ui.error("Connection error")
-            self.opencode_ui.console.print(f"\n[dim]Details: {error_msg}[/dim]")
+            self.opencode_ui.console.print(f"\n[dim]Details:[/dim] {error_msg}")
             self.opencode_ui.console.print("\n[dim]Please run: opencode serve[/dim]")
             self.message_store.save_error(f"Connection error: {error_msg}")
             return None
