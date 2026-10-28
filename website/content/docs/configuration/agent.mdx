@@ -21,7 +21,7 @@ no HAR file is saved, so `engineer <run_id>` cannot regenerate these runs.
 **Requirements:**
 
 - Node.js 20.19+ (headed and headless)
-- Headed runs only: Chrome 146+, open, with auto-connect enabled at `chrome://inspect/#remote-debugging`
+- Headed runs only: Chrome 146+, open, with auto-connect enabled at `chrome://inspect/#remote-debugging`; accept Chrome's connection prompt when the run starts
 
 Reverse API Engineer checks that Chrome's remote debugging port is reachable
 before launching (it does not check the Chrome or Node version) (`agent --dry-run`

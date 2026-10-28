@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pin `chrome-devtools-mcp` to the 1.12 line and update the chrome-mcp prompt for its `pageId` tool arguments; the agent now opens its own tab.
 
 ### Fixed
+- `agent --json` and `engineer --json` report `status: error` (`engine_failure`) when the run ends without writing its client, instead of `ok` with a `script_path` that does not exist.
 - Playwright MCP prompt: `browser_run_code` is now `browser_run_code_unsafe`, and the nonexistent `browser_scroll` tool is no longer listed.
 - The Claude SDK message buffer is raised to 32 MB, so a large screenshot no longer aborts a run.
 

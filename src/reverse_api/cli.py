@@ -613,6 +613,14 @@ def _build_dry_run_payload(
     }
 
 
+def _missing_client_error(result: dict) -> str | None:
+    """A run can end without an SDK error yet write no client, e.g. when the agent stops on a browser it cannot reach."""
+    script_path = result.get("script_path")
+    if script_path and not Path(script_path).exists():
+        return f"the agent finished without writing a client at {script_path}"
+    return None
+
+
 def _build_agent_payload(
     result: dict | None,
     *,
@@ -633,6 +641,8 @@ def _build_agent_payload(
     final_error_obj = error if error is not None else inner_error
     if final_error_obj is None and not run_id:
         final_error_obj = "agent capture produced no run"
+    if final_error_obj is None and (missing := _missing_client_error(result)):
+        final_error_obj, error_kind_hint = missing, "engine_failure"
     error_str = _format_error_message(final_error_obj)
     error_kind = _classify_error(final_error_obj, default=error_kind_hint) if final_error_obj else None
     if error is None and inner_error is not None and result.get("error_kind"):
@@ -677,6 +687,8 @@ def _build_engineer_payload(
     final_error_obj = error if error is not None else inner_error
     if final_error_obj is None and not result:
         final_error_obj = "engineering produced no result"
+    if final_error_obj is None and (missing := _missing_client_error(result)):
+        final_error_obj, error_kind_hint = missing, "engine_failure"
     error_str = _format_error_message(final_error_obj)
     error_kind = _classify_error(final_error_obj, default=error_kind_hint) if final_error_obj else None
     if error is None and inner_error is not None and result.get("error_kind"):
@@ -1502,7 +1514,7 @@ def _session_browser_note(agent_provider: str, headless: bool) -> str | None:
     if agent_provider == "chrome-mcp":
         if headless:
             return "the agent uses its own headless Chrome"
-        return "the agent drives your Chrome through auto-connect · avoid sensitive sites while it runs"
+        return "the agent drives your Chrome through auto-connect · accept Chrome's connection prompt · avoid sensitive sites while it runs"
     if agent_provider == "agent-browser":
         return "the agent drives a browser through the agent-browser CLI"
     return None
@@ -1551,6 +1563,7 @@ def run_auto_capture(
         console.print()
         console.print(" [dim]chrome devtools mcp (auto-connect)[/dim]")
         console.print(" [dim]controlling your real chrome browser[/dim]")
+        console.print(" [dim]accept chrome's connection prompt when it appears[/dim]")
         console.print(" [dim]existing sessions, cookies, and auth available[/dim]")
         console.print()
         console.print(" [dim]warning: the agent will execute actions on your browser[/dim]")
