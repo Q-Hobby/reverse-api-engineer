@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgrade the Cursor bridge to `@cursor/sdk` 1.0.40 with Zod 4.6.7, fixing a Zod memory-exhaustion issue and removing the vulnerable undici dependency.
 - Upgrade the website to Next.js 16.4.3 to fix remote code execution, server-side request forgery, cache poisoning and denial-of-service vulnerabilities, and refresh Sharp, brace-expansion, source-map-js, undici and Zod to patched versions.
 
+### Added
+- **Agent skill**: `skills/reverse-api-engineer` teaches Claude Code, Codex, Cursor, OpenCode and other agents to drive the scripted CLI (preflight, capture, verify, iterate). Install with `npx skills add kalil0321/reverse-api-engineer`.
+
 ## [0.14.0] - 2026-09-23
 
 ### Security

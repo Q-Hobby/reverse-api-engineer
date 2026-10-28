@@ -56,6 +56,16 @@ uv tool install "reverse-api-engineer[manual]"   # or: pip install "reverse-api-
 playwright install chromium
 ```
 
+### Use it from your coding agent
+
+Install the skill so Claude Code, Codex, Cursor, OpenCode and other agents know how to drive the CLI:
+
+```bash
+npx skills add kalil0321/reverse-api-engineer
+```
+
+Then ask your agent for what you need, for example "get me a typed client for the job search on this careers page". The skill lives in [`skills/reverse-api-engineer`](skills/reverse-api-engineer/SKILL.md).
+
 ## Quick start
 
 ```bash
