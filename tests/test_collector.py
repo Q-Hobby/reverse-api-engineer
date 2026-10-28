@@ -142,6 +142,30 @@ class TestCollectorAgentLoop:
     """Test _agent_loop method."""
 
     @pytest.mark.asyncio
+    async def test_agent_loop_isolates_user_claude_settings(self, tmp_path):
+        with patch("reverse_api.collector.MessageStore"):
+            with patch("reverse_api.collector.CollectorUI"):
+                collector = Collector(
+                    run_id="test123",
+                    prompt="test",
+                    model="claude-sonnet-4-6",
+                )
+                collector._collected_dir = tmp_path
+                collector._system_prompt = "system"
+                collector._user_message = "user"
+
+                with patch("reverse_api.utils.get_config_path", return_value=tmp_path / "config.json"):
+                    with patch("reverse_api.collector.ClaudeSDKClient") as mock_sdk:
+                        mock_sdk.return_value.__aenter__ = AsyncMock(side_effect=Exception("SDK error"))
+                        mock_sdk.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                        await collector._agent_loop()
+
+        options = mock_sdk.call_args.kwargs["options"]
+        assert options.setting_sources == []
+        assert options.strict_mcp_config is True
+
+    @pytest.mark.asyncio
     async def test_agent_loop_exception(self, tmp_path):
         """Agent loop handles SDK exception."""
         with patch("reverse_api.collector.MessageStore"):
@@ -389,6 +413,8 @@ class TestCollectorAgentLoop:
 
                 mock_result = MagicMock(spec=ResultMessage)
                 mock_result.is_error = False
+                mock_result.usage = {"input_tokens": 120, "output_tokens": 60}
+                mock_result.total_cost_usd = 0.05
 
                 mock_client = AsyncMock()
                 mock_client.query = AsyncMock()
@@ -406,8 +432,10 @@ class TestCollectorAgentLoop:
 
                     result = await collector._agent_loop()
                     assert result == {"success": True}
-                    assert collector.usage_metadata["input_tokens"] == 300
-                    assert collector.usage_metadata["output_tokens"] == 125
+                    # AssistantMessage.usage repeats per content block; only the result counts.
+                    assert collector.usage_metadata["input_tokens"] == 120
+                    assert collector.usage_metadata["output_tokens"] == 60
+                    assert collector._sdk_cost_usd == 0.05
 
     @pytest.mark.asyncio
     async def test_agent_loop_no_result_returns_success(self, tmp_path):

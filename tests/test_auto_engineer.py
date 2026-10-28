@@ -595,6 +595,35 @@ class TestClaudeAutoEngineerAnalyze:
         assert "mcp__verification__report_client_verified" in options.allowed_tools
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("agent_provider", ["auto", "agent-browser"])
+    async def test_options_isolate_user_claude_settings(self, tmp_path, agent_provider):
+        eng = self._make_engineer(tmp_path, agent_provider=agent_provider)
+
+        mock_client = AsyncMock()
+        mock_client.query = AsyncMock()
+
+        async def mock_receive():
+            yield _sdk_result_message(result="Success")
+
+        mock_client.receive_response = mock_receive
+
+        with patch("reverse_api.utils.get_config_path", return_value=tmp_path / "config.json"):
+            with patch(
+                "reverse_api.auto_engineer.ensure_agent_browser_runtime",
+                return_value=MagicMock(ok=True, error=None, notices=()),
+            ):
+                with patch.object(eng, "_prompt_follow_up", new=AsyncMock(return_value=None)):
+                    with patch("reverse_api.auto_engineer.ClaudeSDKClient") as mock_sdk:
+                        mock_sdk.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                        mock_sdk.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                        await eng.analyze_and_generate()
+
+        options = mock_sdk.call_args.kwargs["options"]
+        assert options.setting_sources == []
+        assert options.strict_mcp_config is True
+
+    @pytest.mark.asyncio
     async def test_result_with_usage(self, tmp_path):
         """Result with usage metadata calculates cost."""
         eng = self._make_engineer(tmp_path)
@@ -659,14 +688,16 @@ class TestClaudeAutoEngineerAnalyze:
                 assert "script_path" in result
 
     @pytest.mark.asyncio
-    async def test_assistant_message_with_usage(self, tmp_path):
-        """AssistantMessage with usage metadata updates tracking."""
+    async def test_usage_comes_from_result_message_only(self, tmp_path):
+        """AssistantMessage.usage repeats per content block; only the ResultMessage totals count."""
         eng = self._make_engineer(tmp_path)
 
         mock_assistant = AssistantMessage(content=[], model="claude-sonnet-4-6")
         mock_assistant.usage = {"input_tokens": 500, "output_tokens": 200}
 
         mock_result = _sdk_result_message()
+        mock_result.usage = {"input_tokens": 40, "output_tokens": 30}
+        mock_result.total_cost_usd = 0.12
 
         mock_client = AsyncMock()
         mock_client.query = AsyncMock()
@@ -684,7 +715,9 @@ class TestClaudeAutoEngineerAnalyze:
 
                 result = await eng.analyze_and_generate()
                 assert result is not None
-                assert eng.usage_metadata.get("input_tokens") == 500
+                assert eng.usage_metadata.get("input_tokens") == 40
+                assert eng.usage_metadata.get("output_tokens") == 30
+                assert eng.usage_metadata.get("estimated_cost_usd") == 0.12
 
     @pytest.mark.asyncio
     async def test_tool_result_with_result_attr(self, tmp_path):
