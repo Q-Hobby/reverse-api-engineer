@@ -108,6 +108,10 @@ def build_sdk_effort(model: str | None = None) -> dict[str, Any]:
     return {}
 
 
+# The SDK default (1 MB) aborts a run when a tool returns a large screenshot.
+SDK_MAX_BUFFER_SIZE = 32 * 1024 * 1024
+
+
 def build_sdk_settings() -> dict[str, Any]:
     """ClaudeAgentOptions kwargs selecting which Claude Code settings the session loads.
 
@@ -236,6 +240,7 @@ async def _generate_folder_name_async(prompt: str) -> str:
     logging.getLogger("claude_agent_sdk._internal.transport.subprocess_cli").setLevel(logging.WARNING)
 
     options = ClaudeAgentOptions(
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
         allowed_tools=[],  # No tools needed for simple text generation
         permission_mode="dontAsk",
         model="claude-haiku-5-5",

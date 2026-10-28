@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from reverse_api.collector import Collector
+from reverse_api.utils import SDK_MAX_BUFFER_SIZE
 
 
 class TestCollectorInit:
@@ -189,6 +190,10 @@ class TestCollectorAgentLoop:
                     result = await collector._agent_loop()
                     assert result is not None
                     assert "error" in result
+
+                options = mock_sdk.call_args.kwargs["options"]
+                assert options.strict_mcp_config is True
+                assert options.max_buffer_size == SDK_MAX_BUFFER_SIZE
 
     @pytest.mark.asyncio
     async def test_agent_loop_result_error(self, tmp_path):

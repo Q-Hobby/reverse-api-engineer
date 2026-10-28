@@ -41,7 +41,7 @@ from .chrome_mcp import CHROME_DEVTOOLS_MCP_PACKAGE
 from .engineer import ClaudeEngineer
 from .opencode_engineer import OpenCodeEngineer, debug_log, format_error
 from .repl.bridge import stream_options
-from .utils import build_sdk_effort, build_sdk_env, build_sdk_settings, get_har_dir
+from .utils import SDK_MAX_BUFFER_SIZE, build_sdk_effort, build_sdk_env, build_sdk_settings, get_har_dir
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -245,6 +245,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
 
         if self.agent_provider == "agent-browser":
             options = ClaudeAgentOptions(
+                max_buffer_size=SDK_MAX_BUFFER_SIZE,
                 system_prompt=system_prompt,
                 mcp_servers={"verification": verification_server},
                 # allowed_tools is an explicit allow-list here (unlike the
@@ -271,6 +272,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
         else:
             mcp_name, mcp_config = self._get_mcp_config()
             options = ClaudeAgentOptions(
+                max_buffer_size=SDK_MAX_BUFFER_SIZE,
                 system_prompt=system_prompt,
                 mcp_servers={mcp_name: mcp_config, "verification": verification_server},
                 permission_mode="bypassPermissions",

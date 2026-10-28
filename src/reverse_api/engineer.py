@@ -28,7 +28,7 @@ from claude_agent_sdk import (
 
 from .base_engineer import REPORT_CLIENT_VERIFIED_INSTRUCTION, BaseEngineer
 from .repl.bridge import stream_options
-from .utils import build_sdk_effort, build_sdk_env, build_sdk_settings, is_context_overflow_error
+from .utils import SDK_MAX_BUFFER_SIZE, build_sdk_effort, build_sdk_env, build_sdk_settings, is_context_overflow_error
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -328,6 +328,7 @@ class ClaudeEngineer(BaseEngineer):
         system_prompt, user_message = self._build_prompts()
 
         options = ClaudeAgentOptions(
+            max_buffer_size=SDK_MAX_BUFFER_SIZE,
             system_prompt=system_prompt,
             permission_mode="acceptEdits",
             can_use_tool=self._handle_tool_permission,

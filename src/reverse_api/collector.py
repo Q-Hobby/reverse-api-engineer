@@ -18,7 +18,7 @@ from claude_agent_sdk import (
 from .collector_ui import CollectorUI
 from .messages import MessageStore
 from .pricing import calculate_cost
-from .utils import build_sdk_effort, build_sdk_env, build_sdk_settings, generate_folder_name, get_collected_dir
+from .utils import SDK_MAX_BUFFER_SIZE, build_sdk_effort, build_sdk_env, build_sdk_settings, generate_folder_name, get_collected_dir
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -102,6 +102,7 @@ class Collector:
     async def _agent_loop(self) -> dict[str, Any] | None:
         """Run Claude Agent SDK loop."""
         options = ClaudeAgentOptions(
+            max_buffer_size=SDK_MAX_BUFFER_SIZE,
             system_prompt=self._system_prompt,
             permission_mode="bypassPermissions",
             allowed_tools=[
