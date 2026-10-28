@@ -36,11 +36,14 @@ class TestBuildAgentPayload:
     """Stable shape for the `agent --json` payload."""
 
     def test_success_shape(self, tmp_path):
+        client = tmp_path / "scripts" / "api_client.py"
+        client.parent.mkdir()
+        client.write_text("")
         payload = _build_agent_payload(
             {
                 "run_id": "abc123",
                 "mode": "auto",
-                "script_path": str(tmp_path / "scripts" / "api_client.py"),
+                "script_path": str(client),
                 # Mix of Claude SDK keys to exercise normalization (cache_creation_input_tokens
                 # → cache_write_tokens, estimated_cost_usd → total_cost_usd).
                 "usage": {
@@ -75,6 +78,16 @@ class TestBuildAgentPayload:
         # Must be JSON-serializable (no Path objects sneaking through)
         json.dumps(payload)
 
+
+    def test_unwritten_client_is_an_engine_failure(self, tmp_path):
+        payload = _build_agent_payload(
+            {"run_id": "abc123", "mode": "chrome-mcp", "script_path": str(tmp_path / "api_client.py"), "usage": {}},
+            prompt="x",
+            url=None,
+        )
+        assert payload["status"] == "error"
+        assert payload["error_kind"] == "engine_failure"
+        assert "without writing a client" in payload["error"]
     def test_no_run_id_is_error(self):
         payload = _build_agent_payload({}, prompt="x", url=None)
         assert payload["status"] == "error"

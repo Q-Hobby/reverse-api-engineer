@@ -412,7 +412,7 @@ def _build_dry_run_payload(
     from .agent_browser import check_agent_browser_runtime
 
     checks: list[dict] = []
-    agent_provider = config_manager.get("agent_provider", "auto")
+    agent_provider = config_manager.get("agent_provider", "chrome-mcp")
     global_agent_browser = shutil.which("agent-browser")
 
     # 1. Prompt
@@ -514,15 +514,15 @@ def _build_dry_run_payload(
     else:
         checks.append({"name": "npx", "status": "ok", "message": npx})
 
-    # 6. Headed chrome-mcp requires the user has a real Chrome with auto-connect
+    # 6. Headed chrome-mcp attaches to the user's running Chrome through auto-connect
     if agent_provider == "chrome-mcp" and not headless:
+        from .chrome_mcp import check_auto_connect
+
+        auto_connect = check_auto_connect()
         checks.append({
             "name": "chrome-mcp:auto-connect",
-            "status": "warn",
-            "message": (
-                "chrome-mcp without --headless requires Chrome 146+ with auto-connect enabled "
-                "at chrome://inspect/#remote-debugging — this is not auto-checkable"
-            ),
+            "status": "ok" if auto_connect.ok else "error",
+            "message": auto_connect.message,
         })
 
     # 7. agent-browser CLI: read-only validation (no npm install during dry-run).
@@ -613,6 +613,14 @@ def _build_dry_run_payload(
     }
 
 
+def _missing_client_error(result: dict) -> str | None:
+    """A run can end without an SDK error yet write no client, e.g. when the agent stops on a browser it cannot reach."""
+    script_path = result.get("script_path")
+    if script_path and not Path(script_path).exists():
+        return f"the agent finished without writing a client at {script_path}"
+    return None
+
+
 def _build_agent_payload(
     result: dict | None,
     *,
@@ -633,8 +641,12 @@ def _build_agent_payload(
     final_error_obj = error if error is not None else inner_error
     if final_error_obj is None and not run_id:
         final_error_obj = "agent capture produced no run"
+    if final_error_obj is None and (missing := _missing_client_error(result)):
+        final_error_obj, error_kind_hint = missing, "engine_failure"
     error_str = _format_error_message(final_error_obj)
     error_kind = _classify_error(final_error_obj, default=error_kind_hint) if final_error_obj else None
+    if error is None and inner_error is not None and result.get("error_kind"):
+        error_kind = result["error_kind"]
     har_path = None
     if run_id:
         candidate = get_har_dir(run_id, output_dir) / "recording.har"
@@ -675,8 +687,12 @@ def _build_engineer_payload(
     final_error_obj = error if error is not None else inner_error
     if final_error_obj is None and not result:
         final_error_obj = "engineering produced no result"
+    if final_error_obj is None and (missing := _missing_client_error(result)):
+        final_error_obj, error_kind_hint = missing, "engine_failure"
     error_str = _format_error_message(final_error_obj)
     error_kind = _classify_error(final_error_obj, default=error_kind_hint) if final_error_obj else None
+    if error is None and inner_error is not None and result.get("error_kind"):
+        error_kind = result["error_kind"]
     return {
         "schema_version": AGENT_JSON_SCHEMA_VERSION,
         "status": "error" if error_str else "ok",
@@ -942,8 +958,8 @@ def _handle_settings_action(mode_color: str = THEME_PRIMARY) -> bool:  # noqa: C
 
     elif action == "agent_provider":
         provider_choices = [
-            Choice(title="auto (Playwright MCP)", value="auto"),
-            Choice(title="chrome-mcp (Chrome DevTools MCP)", value="chrome-mcp"),
+            Choice(title="chrome-mcp (your Chrome via Chrome DevTools MCP, default)", value="chrome-mcp"),
+            Choice(title="auto (Playwright MCP, records a HAR)", value="auto"),
             Choice(title="agent-browser (Vercel CLI via shell/Bash)", value="agent-browser"),
             Choice(title="back", value="back"),
         ]
@@ -1423,7 +1439,7 @@ def run_agent_capture(
     if not prompt:
         raise click.UsageError("a prompt is required")
 
-    agent_provider = config_manager.get("agent_provider", "auto")
+    agent_provider = config_manager.get("agent_provider", "chrome-mcp")
     return run_auto_capture(
         prompt=prompt,
         url=url,
@@ -1498,7 +1514,7 @@ def _session_browser_note(agent_provider: str, headless: bool) -> str | None:
     if agent_provider == "chrome-mcp":
         if headless:
             return "the agent uses its own headless Chrome"
-        return "the agent drives your Chrome through auto-connect · avoid sensitive sites while it runs"
+        return "the agent drives your Chrome through auto-connect · accept Chrome's connection prompt · avoid sensitive sites while it runs"
     if agent_provider == "agent-browser":
         return "the agent drives a browser through the agent-browser CLI"
     return None
@@ -1509,7 +1525,7 @@ def run_auto_capture(
     url: str | None = None,
     model: str | None = None,
     output_dir: str | None = None,
-    agent_provider: str = "auto",
+    agent_provider: str = "chrome-mcp",
     interactive: bool = True,
     headless: bool = False,
     json_event_sink: Callable[[dict[str, Any]], None] | None = None,
@@ -1523,6 +1539,23 @@ def run_auto_capture(
     if not prompt:
         raise click.UsageError("a prompt is required")
 
+    if agent_provider == "chrome-mcp" and not headless:
+        from .chrome_mcp import check_auto_connect
+
+        auto_connect = check_auto_connect()
+        if not auto_connect.ok:
+            console.print()
+            console.print(" [dim]chrome devtools mcp (auto-connect)[/dim]")
+            console.print(" [dim]auto-connect setup:[/dim]")
+            console.print(" [dim] 1. chrome 146+ required[/dim]")
+            console.print(" [dim] 2. go to chrome://inspect/#remote-debugging[/dim]")
+            console.print(' [dim] 3. click "Enable auto-connect" and keep chrome open[/dim]')
+            console.print(" [dim] 4. node.js v20.19+[/dim]")
+            console.print(" [dim]or run with --headless, or pick another provider in /settings[/dim]")
+            console.print()
+            console.print(f" [red]error:[/red] {auto_connect.reason}")
+            return {"error": auto_connect.message, "error_kind": "config_invalid", "error_reported": True}
+
     session_note = _session_browser_note(agent_provider, headless)
     if session_note:
         console.print(session_note)
@@ -1530,13 +1563,8 @@ def run_auto_capture(
         console.print()
         console.print(" [dim]chrome devtools mcp (auto-connect)[/dim]")
         console.print(" [dim]controlling your real chrome browser[/dim]")
+        console.print(" [dim]accept chrome's connection prompt when it appears[/dim]")
         console.print(" [dim]existing sessions, cookies, and auth available[/dim]")
-        console.print()
-        console.print(" [dim]auto-connect setup:[/dim]")
-        console.print(" [dim] 1. chrome 146+ required[/dim]")
-        console.print(" [dim] 2. go to chrome://inspect/#remote-debugging[/dim]")
-        console.print(' [dim] 3. click "Enable auto-connect"[/dim]')
-        console.print(" [dim] 4. node.js v20.19+[/dim]")
         console.print()
         console.print(" [dim]warning: the agent will execute actions on your browser[/dim]")
         console.print(" [dim]avoid browsing sensitive sites during the session[/dim]")
@@ -1877,7 +1905,7 @@ def engineer(
         )
         return
     if not machine_output:
-        run_engineer(
+        result = run_engineer(
             run_id,
             prompt=main_prompt,
             additional_instructions=additional,
@@ -1886,6 +1914,8 @@ def engineer(
             is_fresh=fresh,
             interactive=interactive,
         )
+        if isinstance(result, dict) and result.get("error_kind") == "misuse":
+            sys.exit(2)
         return
 
     from .json_stream import make_json_stream_sink
@@ -1896,6 +1926,7 @@ def engineer(
             if json_stream
             else None
         )
+        result = None
         try:
             result = run_engineer(
                 run_id,
@@ -1919,6 +1950,8 @@ def engineer(
             )
 
         _write_json_stdout(real_stdout, payload, json_stream=json_stream)
+    if isinstance(result, dict) and result.get("error_kind") == "misuse":
+        sys.exit(2)
     sys.exit(0 if payload["status"] == "ok" else 1)
 
 
@@ -1955,6 +1988,16 @@ def run_engineer(
             paths = run_data.get("paths", {})
             har_dir = Path(paths.get("har_dir", get_har_dir(run_id, None)))
             har_path = har_dir / "recording.har"
+            if not har_path.exists() and not resume:
+                if run_data.get("mode") == "chrome-mcp":
+                    message = (
+                        f"run {run_id} was captured with chrome-mcp, which saves no HAR, so engineer cannot "
+                        "regenerate it; run `agent` again, or set agent_provider to \"auto\" to keep a HAR"
+                    )
+                else:
+                    message = f"run {run_id} has no HAR at {har_path}"
+                console.print(f" [red]error:[/red] {message}")
+                return {"error": message, "error_kind": "misuse", "error_reported": True}
 
     sdk = _session_sdk(resume) or config_manager.get("sdk", "claude")
     enable_sync = config_manager.get("real_time_sync", True)

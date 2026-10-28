@@ -82,10 +82,12 @@ class TestTtyDetectionAtReplEntry:
 class TestBuildEngineerPayload:
     """Stable shape for the `engineer --json` payload."""
 
-    def test_success_shape(self):
+    def test_success_shape(self, tmp_path):
+        client = tmp_path / "api_client.py"
+        client.write_text("")
         payload = _build_engineer_payload(
             {
-                "script_path": "/abs/api_client.py",
+                "script_path": str(client),
                 "usage": {"input_tokens": 1, "output_tokens": 2, "total_cost": 0.001},
             },
             run_id="abc123",
@@ -97,13 +99,20 @@ class TestBuildEngineerPayload:
         assert payload["run_id"] == "abc123"
         assert payload["prompt"] == "add pagination"
         assert payload["fresh"] is False
-        assert payload["script_path"] == "/abs/api_client.py"
+        assert payload["script_path"] == str(client)
         # `total_cost` (legacy/Copilot key) is normalized to `total_cost_usd`
         assert payload["usage"]["total_cost_usd"] == 0.001
         assert payload["usage"]["raw"]["total_cost"] == 0.001
         assert payload["error"] is None
         assert payload["error_kind"] is None
         assert set(payload.keys()) == EXPECTED_ENGINEER_KEYS
+
+    def test_unwritten_client_is_an_engine_failure(self, tmp_path):
+        payload = _build_engineer_payload(
+            {"script_path": str(tmp_path / "api_client.py")}, run_id="abc", prompt=None, fresh=False
+        )
+        assert payload["status"] == "error"
+        assert payload["error_kind"] == "engine_failure"
 
     def test_none_result_is_error(self):
         payload = _build_engineer_payload(None, run_id="abc", prompt=None, fresh=False)
@@ -130,16 +139,18 @@ class TestBuildEngineerPayload:
 class TestEngineerCommandJson:
     """`engineer` click command --json wiring."""
 
-    def test_json_emits_payload_on_success(self):
+    def test_json_emits_payload_on_success(self, tmp_path):
         runner = CliRunner()
-        fake_result = {"script_path": "/abs/api_client.py", "usage": {"total_cost": 0.0}}
+        client = tmp_path / "api_client.py"
+        client.write_text("")
+        fake_result = {"script_path": str(client), "usage": {"total_cost": 0.0}}
         with patch("reverse_api.cli.run_engineer", return_value=fake_result):
             result = runner.invoke(engineer, ["abc123", "--json"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["status"] == "ok"
         assert payload["run_id"] == "abc123"
-        assert payload["script_path"] == "/abs/api_client.py"
+        assert payload["script_path"] == str(client)
         assert set(payload.keys()) == EXPECTED_ENGINEER_KEYS
 
     def test_json_emits_error_on_not_found(self):
@@ -172,11 +183,11 @@ class TestEngineerCommandJson:
         assert payload["status"] == "error"
         assert payload["error"] == "boom"
 
-    def test_prompt_without_fresh_threaded_as_additional(self):
+    def test_prompt_without_fresh_threaded_as_additional(self, tmp_path):
         """--prompt without --fresh must reach run_engineer as additional_instructions
         even on the JSON path (regression for the cubic-dev-ai catch on PR #63)."""
         runner = CliRunner()
-        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": str(tmp_path)}) as mock_run:
             result = runner.invoke(engineer, ["abc123", "--json", "-p", "add pagination"])
         assert result.exit_code == 0, result.output
         kwargs = mock_run.call_args.kwargs
@@ -184,9 +195,9 @@ class TestEngineerCommandJson:
         assert kwargs["additional_instructions"] == "add pagination"
         assert kwargs["is_fresh"] is False
 
-    def test_fresh_with_prompt_threaded_as_main(self):
+    def test_fresh_with_prompt_threaded_as_main(self, tmp_path):
         runner = CliRunner()
-        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": str(tmp_path)}) as mock_run:
             result = runner.invoke(
                 engineer, ["abc123", "--json", "--fresh", "-p", "extract auth"]
             )
@@ -682,11 +693,11 @@ class TestFollowUpPromptSuppressed:
                     eng = _Eng(run_id="test123", har_path=har_path, prompt="x")
         assert eng.interactive is True
 
-    def test_engineer_command_threads_interactive_through_run_engineer(self):
+    def test_engineer_command_threads_interactive_through_run_engineer(self, tmp_path):
         """`engineer --json` must pass interactive=False to run_engineer so
         BaseEngineer drops the follow-up loop in the SDK."""
         runner = CliRunner()
-        with patch("reverse_api.cli.run_engineer", return_value={"script_path": "/x.py"}) as mock_run:
+        with patch("reverse_api.cli.run_engineer", return_value={"script_path": str(tmp_path)}) as mock_run:
             result = runner.invoke(engineer, ["abc123", "--json"])
         assert result.exit_code == 0, result.output
         assert mock_run.call_args.kwargs["interactive"] is False

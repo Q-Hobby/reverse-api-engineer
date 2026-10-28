@@ -14,6 +14,7 @@ from typing import Any
 
 from .agent_browser import ensure_agent_browser_runtime, print_agent_browser_setup_notices
 from .base_engineer import BaseEngineer
+from .chrome_mcp import CHROME_DEVTOOLS_MCP_PACKAGE
 from .runtime_commands import resolve_windows_command
 from .tui import ClaudeUI
 
@@ -516,7 +517,7 @@ class CursorAutoEngineer(CursorEngineer):
         if self.agent_provider == "agent-browser":
             return {}
         if self.agent_provider == "chrome-mcp":
-            args = ["-y", "chrome-devtools-mcp@latest", "--no-usage-statistics"]
+            args = ["-y", CHROME_DEVTOOLS_MCP_PACKAGE, "--no-usage-statistics"]
             if self.headless:
                 args.append("--headless")
             else:

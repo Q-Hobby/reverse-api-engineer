@@ -413,12 +413,13 @@ class TestReviewedResumeAgain:
 
 class TestStoppedEngineerRuns:
     @pytest.fixture
-    def history(self, monkeypatch):
+    def history(self, monkeypatch, tmp_path):
         sm, config = MagicMock(), MagicMock()
         config.get.side_effect = lambda key, default=None: {"sdk": "claude", "real_time_sync": True}.get(key, default)
         monkeypatch.setattr(cli, "session_manager", sm)
         monkeypatch.setattr(cli, "config_manager", config)
-        sm.get_run.return_value = {"run_id": "r1", "prompt": "jobs", "paths": {"har_dir": "/tmp/har"}}
+        (tmp_path / "recording.har").write_text("{}")
+        sm.get_run.return_value = {"run_id": "r1", "prompt": "jobs", "paths": {"har_dir": str(tmp_path)}}
         return sm
 
     def test_a_run_stopped_before_its_first_turn_records_nothing(self, history):

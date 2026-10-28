@@ -9,7 +9,7 @@ DEFAULT_OPENCODE_PROVIDER = "opencode"
 DEFAULT_OPENCODE_MODEL = "big-pickle"
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "agent_provider": "auto",  # "auto" | "chrome-mcp" | "agent-browser"
+    "agent_provider": "chrome-mcp",  # "chrome-mcp" | "auto" (Playwright MCP) | "agent-browser"
     "agent_browser_notes": "",  # extra instructions merged into agent-browser prompt / RAE_AGENT_BROWSER_NOTES env
     "agent_browser_npx_package": "agent-browser@0",
     "claude_code_model": "claude-sonnet-4-6",

@@ -72,12 +72,12 @@ Cycle modes with **Shift+Tab**:
 |------|--------------|
 | `manual` | You drive the browser; AI generates the client from captured traffic. |
 | `agent` | An AI agent drives capture autonomously (Playwright or Chrome MCP, or Vercel agent-browser CLI). |
-| `engineer` | Re-run generation on a previous capture (`engineer <run_id>`). |
+| `engineer` | Re-run generation on a previous capture (`engineer <run_id>`). Needs a HAR, so it works on `auto`, `agent-browser` and manual runs, not chrome-mcp runs. |
 | `collector` | Agent collects structured data (JSON/CSV) using web search + fetch. |
 
 Agent mode providers:
-- **auto** (default): Playwright MCP, single workflow for browsing + reverse engineering.
-- **chrome-mcp**: drives your real Chrome so you keep existing sessions/cookies. Requires Chrome 146+ and Node.js 20.19+.
+- **chrome-mcp** (default for new configs; an existing `config.json` keeps its provider): drives your real Chrome so you keep existing sessions/cookies. Needs Node.js 20.19+; headed runs also need Chrome 146+ open with auto-connect enabled at `chrome://inspect/#remote-debugging`, and someone at the machine to accept Chrome's connection prompt when the run starts. For headed runs, rae checks before launching that Chrome's remote debugging port is reachable (not the Chrome or Node version) and stops with setup steps if it isn't; `agent --dry-run` shows the same check. Headless runs skip it. `--headless` starts a separate headless Chrome without your sessions. No HAR file is saved, so `engineer <run_id>` cannot regenerate these runs; run `agent` again instead.
+- **auto**: Playwright MCP, records a HAR and needs no Chrome setup.
 - **agent-browser**: [Vercel agent-browser](https://github.com/vercel-labs/agent-browser) **CLI** (not a Reverse API Engineer browser MCP server). At session start RAE uses whatever `agent-browser` is already on `PATH`, otherwise runs **`npm install -g <pin>`** (same pin as config / `RAE_AGENT_BROWSER_PACKAGE`), prints a yellow notice, validates with **`--help`**, and only then falls back to **`npx -y <pin>`** if npm cannot install. Prompts embed the resolved shell prefix alongside **`skills get core --full`**, **`skills list`**, HAR phases, cloud notes from `agent_browser_notes`. Tune with `agent_browser_npx_package` (optional), env `RAE_AGENT_BROWSER_*`. First Chromium fetch: **`agent-browser install`** (add `--with-deps` on trimmed Linux).
 
 
@@ -94,7 +94,7 @@ Settings live in `~/.reverse-api/config.json` and can be edited via `/settings` 
 
 ```json
 {
-  "agent_provider": "auto",
+  "agent_provider": "chrome-mcp",
   "agent_browser_npx_package": "agent-browser@0",
   "agent_browser_notes": "",
   "claude_code_model": "claude-sonnet-4-6",
