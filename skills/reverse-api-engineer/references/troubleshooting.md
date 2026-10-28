@@ -15,6 +15,7 @@ Failed runs return `status: "error"` with an `error` message and an `error_kind`
 Other cases:
 
 - **`config_invalid` with "Chrome remote debugging is not enabled" or "Chrome is not running"**: the `chrome-mcp` provider could not reach the user's Chrome. Ask them to open Chrome 146+ and enable auto-connect at `chrome://inspect/#remote-debugging`, or add `--headless` when the site does not need their login.
+- **A headed `chrome-mcp` run ends within a minute without a client, and `rae-run.log` shows `new_page` timing out**: Chrome's connection prompt went unanswered. Ask the user to watch Chrome and accept the prompt, then run again. For public data, `--headless` avoids the prompt. Older rae versions report such a run as `status: ok` with a `script_path` that does not exist, so check that the file exists.
 - **`engineer` exits `2` with "captured with chrome-mcp"**: that run has no HAR. Run `agent` again with a more specific goal instead.
 - **The run stalls right after the agent closes the browser**, and `<runs>/har/<run_id>/` only holds `recording.har.tmp`: the `auto` provider ran a `rae-playwright-mcp` older than 0.0.9, which hangs on Node 26. Run `npx -y rae-playwright-mcp@latest --version` to fetch the fixed release (it prints `Version 0.0.9` or later), then rerun.
 - **No browser on the machine**: add `--headless`.

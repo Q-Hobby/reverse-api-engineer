@@ -51,7 +51,7 @@ This validates the prompt, URL, config and environment without opening a browser
 
 For `chrome-mcp`, the `chrome-mcp:auto-connect` check covers the connection to the user's Chrome:
 
-- `ok`: Chrome is reachable.
+- `ok`: Chrome is reachable. The user still has to accept Chrome's connection prompt when the run starts.
 - `error`: it is not. If the site needs the user's login, ask them to open Chrome 146+ and enable remote debugging at `chrome://inspect/#remote-debugging` ("Enable auto-connect"), then run the preflight again. For public data, add `--headless`: rae then starts its own headless Chrome, without the user's sessions, and skips the check.
 - `warn`: this rae version cannot test the connection. Ask the user to confirm Chrome is open with auto-connect enabled before a headed run, or use `--headless` for public data.
 
@@ -68,7 +68,7 @@ echo $! > rae-run.pid
 
 `--json-stream` writes one NDJSON event per line and ends with a `{"event":"result",...}` line. The run is finished when that line appears in `rae-run.ndjson`, or when the process in `rae-run.pid` has exited (`kill -0 "$(cat rae-run.pid)"` fails). Check progress with `tail rae-run.log`. Never start a second capture while one is still running: it repeats the work and the cost.
 
-- Without `--headless`, `chrome-mcp` opens its own tab in the user's Chrome and closes only that tab. Tell the user before starting, since it acts in their browser.
+- Without `--headless`, `chrome-mcp` opens its own tab in the user's Chrome and closes only that tab. Tell the user before starting, since it acts in their browser, and ask them to accept the connection prompt Chrome shows: if nobody accepts it, the run times out without a client.
 - Add `--headless` for public sites, or on machines without a display.
 - Add `-o <dir>` to write runs somewhere other than `~/.reverse-api/runs`.
 - `--json` prints the same result as a single object at the end, with no progress. Use it only when the shell can wait for the whole run.
