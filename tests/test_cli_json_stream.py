@@ -11,12 +11,14 @@ from reverse_api.json_stream import StreamingUIWrapper
 
 
 class TestJsonStreamAgent:
-    def test_agent_json_stream_emits_ndjson_and_result(self):
+    def test_agent_json_stream_emits_ndjson_and_result(self, tmp_path):
         runner = CliRunner()
+        client = tmp_path / "api_client.py"
+        client.write_text("")
         fake_result = {
             "run_id": "abc123",
             "mode": "auto",
-            "script_path": "/tmp/api_client.py",
+            "script_path": str(client),
             "usage": {},
         }
 
@@ -50,13 +52,16 @@ class TestJsonStreamAgent:
 
 
 class TestJsonStreamEngineer:
-    def test_engineer_json_stream_emits_result_event(self):
+    def test_engineer_json_stream_emits_result_event(self, tmp_path):
         runner = CliRunner()
+        client = tmp_path / "c.py"
+        client.write_text("")
+
         def fake_engineer(run_id, **kwargs):
             sink = kwargs.get("json_event_sink")
             if sink:
                 sink({"event": "run_started", "run_id": run_id, "sdk": "claude"})
-            return {"script_path": "/tmp/c.py", "usage": {}}
+            return {"script_path": str(client), "usage": {}}
 
         with patch("reverse_api.cli.run_engineer", side_effect=fake_engineer):
             result = runner.invoke(engineer, ["abc123", "--json-stream", "-p", "add tests"])
