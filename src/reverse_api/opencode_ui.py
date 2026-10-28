@@ -4,7 +4,9 @@ import json
 from typing import Any
 
 from rich.console import Console
+from rich.errors import MarkupError
 from rich.live import Live
+from rich.markup import escape
 from rich.text import Text
 
 from .theme import THEME_DIM, THEME_PRIMARY
@@ -133,7 +135,7 @@ class OpenCodeUI:
             header = header[:45] + "…"
 
         input_summary = self._summarize_input(tool_name, args)
-        self.console.print(f"  [dim]{icon}[/dim] [white]{header}[/white]")
+        self.console.print(f"  [dim]{icon}[/dim] [white]{escape(header)}[/white]")
         if input_summary:
             self.console.print(f"      {input_summary}")
 
@@ -149,11 +151,11 @@ class OpenCodeUI:
             self._live.update(self._build_display())
 
         if is_error:
-            self.console.print(f"  [red]![/red] {tool_name.lower()} failed", style=THEME_DIM)
+            self.console.print(f"  [red]![/red] {escape(tool_name.lower())} failed", style=THEME_DIM)
             if output:
                 # Show first 100 chars of error
                 error_preview = str(output)[:100].replace("\n", " ")
-                self.console.print(f"    {error_preview}", style=THEME_DIM)
+                self.console.print(f"    {escape(error_preview)}", style=THEME_DIM)
 
     def step_finish(self, cost: float, tokens: dict[str, Any]) -> None:
         """Display step completion with usage stats."""
@@ -182,6 +184,9 @@ class OpenCodeUI:
             self.console.print(f"  [dim]step: {token_summary} ${cost:.4f}[/dim]")
         elif token_parts:
             self.console.print(f"  [dim]step: {token_summary}[/dim]")
+
+    def usage(self, usage_metadata: dict[str, Any]) -> None:
+        self.session_summary(usage_metadata)
 
     def session_summary(self, usage_metadata: dict[str, Any]) -> None:
         """Display session usage summary."""
@@ -224,27 +229,30 @@ class OpenCodeUI:
             display_text = text[:100].replace("\n", " ").strip()
             if len(text) > 100:
                 display_text += "..."
-            self.console.print(f"  .. {display_text}", style=THEME_DIM)
+            self.console.print(f"  .. {escape(display_text)}", style=THEME_DIM)
 
     def success(self, script_path: str, local_path: str | None = None) -> None:
         """Display success message."""
         self.console.print()
         self.console.print(" [dim]decoding complete[/dim]")
-        self.console.print(f" [dim]internal:[/dim] [white]{script_path}[/white]")
+        self.console.print(f" [dim]internal:[/dim] [white]{escape(script_path)}[/white]")
         if local_path:
-            self.console.print(f" [dim]synced:[/dim]   [white]{local_path}[/white]")
+            self.console.print(f" [dim]synced:[/dim]   [white]{escape(local_path)}[/white]")
         self.console.print()
 
     def error(self, message: str, *, unexpected: bool | None = None) -> None:
         """Display error message with Rich formatting support."""
         self.console.print()
         # Check if message already contains Rich markup (from format_error)
+        plain = f" [dim]![/dim] [red]error:[/red] {escape(message)}"
         if message.startswith("[") and "[/" in message:
-            # Message is already formatted with Rich markup
-            self.console.print(message)
+            # Message is already formatted with Rich markup; raw errors can look the same.
+            try:
+                self.console.print(message)
+            except MarkupError:
+                self.console.print(plain)
         else:
-            # Simple error format
-            self.console.print(f" [dim]![/dim] [red]error:[/red] {message}")
+            self.console.print(plain)
         if unexpected is None:
             normalized = message.casefold()
             expected_markers = (
@@ -264,7 +272,7 @@ class OpenCodeUI:
 
     def permission_requested(self, perm_type: str, title: str) -> None:
         """Display when a permission is requested."""
-        self.console.print(f"  [yellow]?[/yellow] [dim]permission:[/dim] {title}", style=THEME_DIM)
+        self.console.print(f"  [yellow]?[/yellow] [dim]permission:[/dim] {escape(title)}", style=THEME_DIM)
 
     def permission_approved(self, perm_type: str) -> None:
         """Display when a permission is auto-approved."""
@@ -301,7 +309,7 @@ class OpenCodeUI:
             line = (t.get("activeForm") or t.get("content") or "").strip() or "(empty)"
             if len(line) > 76:
                 line = line[:73] + "..."
-            self.console.print(f"      [dim]{ic}[/dim]  {line}")
+            self.console.print(f"      [dim]{ic}[/dim]  {escape(line)}")
         if len(todos) > 14:
             self.console.print(f"      [dim]… {len(todos) - 14} more[/dim]")
         self.console.print()
@@ -312,7 +320,7 @@ class OpenCodeUI:
     def file_edited(self, file_path: str) -> None:
         """Display when a file is edited."""
         short_path = self._truncate_path(file_path, 40)
-        self.console.print(f"  [dim]✎[/dim] {short_path}", style=THEME_DIM)
+        self.console.print(f"  [dim]✎[/dim] {escape(short_path)}", style=THEME_DIM)
 
     def session_busy(self) -> None:
         """Display busy indicator."""
@@ -349,7 +357,7 @@ class OpenCodeUI:
     def session_retry(self, attempt: int, message: str) -> None:
         """Display retry status."""
         reason = message if message else "retrying..."
-        self.console.print(f"  [yellow]⟳[/yellow] [dim]attempt {attempt}:[/dim] {reason}")
+        self.console.print(f"  [yellow]⟳[/yellow] [dim]attempt {attempt}:[/dim] {escape(reason)}")
 
     def _summarize_input(self, tool_name: str, tool_input: dict) -> str:
         """Create a brief summary of tool input."""
@@ -363,7 +371,7 @@ class OpenCodeUI:
         if tool_lower == "call_mcp_tool":
             mn = tool_input.get("name") or tool_input.get("server") or tool_input.get("tool")
             if isinstance(mn, str) and mn:
-                return f"[dim]{mn[:70]}{'…' if len(mn) > 70 else ''}[/dim]"
+                return f"[dim]{escape(mn[:70])}{'…' if len(mn) > 70 else ''}[/dim]"
             return ""
         if tool_lower.startswith("mcp"):
             keys = ("url", "path", "file_path", "command", "query", "pattern", "browserTab", "tabId", "text")
@@ -372,7 +380,7 @@ class OpenCodeUI:
                 if isinstance(v, str) and v.strip():
                     vv = v.replace("\n", " ").strip()
                     cap = 72 if k in ("url", "path", "file_path") else 60
-                    return f"[dim]{k}[/dim] [dim]{vv[:cap]}{'…' if len(vv) > cap else ''}[/dim]"
+                    return f"[dim]{k}[/dim] [dim]{escape(vv[:cap])}{'…' if len(vv) > cap else ''}[/dim]"
             args = tool_input.get("arguments")
             if isinstance(args, str) and args.strip().startswith("{"):
                 try:
@@ -384,30 +392,30 @@ class OpenCodeUI:
                     v = args.get(k)
                     if isinstance(v, str) and v.strip():
                         vv = v.replace("\n", " ").strip()
-                        return f"[dim]{k}[/dim] [dim]{vv[:70]}{'…' if len(vv) > 70 else ''}[/dim]"
+                        return f"[dim]{k}[/dim] [dim]{escape(vv[:70])}{'…' if len(vv) > 70 else ''}[/dim]"
             blob = json.dumps(tool_input, default=str)
             if len(blob) > 90:
-                return f"[dim]{blob[:87]}…[/dim]"
-            return f"[dim]{blob}[/dim]"
+                return f"[dim]{escape(blob[:87])}…[/dim]"
+            return f"[dim]{escape(blob)}[/dim]"
 
         if tool_lower in ("read", "file_read"):
             path = tool_input.get("path", tool_input.get("file_path", ""))
-            return f"[dim]{self._truncate_path(path)}[/dim]"
+            return f"[dim]{escape(self._truncate_path(path))}[/dim]"
         elif tool_lower in ("write", "file_write", "edit"):
             path = tool_input.get("path", tool_input.get("file_path", ""))
-            return f"[dim]→ {self._truncate_path(path)}[/dim]"
+            return f"[dim]→ {escape(self._truncate_path(path))}[/dim]"
         elif tool_lower in ("bash", "shell"):
             cmd = str(tool_input.get("command", ""))[:60]
-            return f"[dim]$ {cmd}{'...' if len(cmd) >= 60 else ''}[/dim]"
+            return f"[dim]$ {escape(cmd)}{'...' if len(cmd) >= 60 else ''}[/dim]"
         elif tool_lower in ("glob", "find"):
             pattern = tool_input.get("pattern", tool_input.get("query", ""))
-            return f"[dim]'{pattern}'[/dim]"
+            return f"[dim]'{escape(str(pattern))}'[/dim]"
         elif tool_lower in ("webfetch", "web_fetch"):
             url = str(tool_input.get("url", ""))[:50]
-            return f"[dim]{url}{'...' if len(url) >= 50 else ''}[/dim]"
+            return f"[dim]{escape(url)}{'...' if len(url) >= 50 else ''}[/dim]"
         elif tool_lower in ("websearch", "web_search"):
             q = str(tool_input.get("query", ""))[:50]
-            return f"[dim]'{q}{'...' if len(q) >= 50 else ''}'[/dim]"
+            return f"[dim]'{escape(q)}{'...' if len(q) >= 50 else ''}'[/dim]"
 
         return ""
 
@@ -419,7 +427,7 @@ class OpenCodeUI:
 
     def sync_started(self, dest_dir: str) -> None:
         """Display when file sync starts."""
-        self.console.print(f"  [dim]⟳ sync: active → {dest_dir}[/dim]")
+        self.console.print(f"  [dim]⟳ sync: active → {escape(dest_dir)}[/dim]")
 
     def sync_flash(self, message: str) -> None:
         """Display a brief sync notification (silenced to reduce noise)."""
@@ -428,4 +436,4 @@ class OpenCodeUI:
 
     def sync_error(self, message: str) -> None:
         """Display a sync error."""
-        self.console.print(f"  [dim]![/dim] [yellow]sync error:[/yellow] {message}")
+        self.console.print(f"  [dim]![/dim] [yellow]sync error:[/yellow] {escape(message)}")

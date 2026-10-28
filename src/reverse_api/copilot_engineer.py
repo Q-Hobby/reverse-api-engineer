@@ -1,12 +1,24 @@
 """GitHub Copilot SDK implementation for reverse engineering."""
 
 import asyncio
+from collections.abc import Callable
 from typing import Any
 
 from .base_engineer import BaseEngineer
 
 # Timeout for waiting on Copilot session completion (10 minutes)
 _SESSION_TIMEOUT = 600
+
+
+def tool_output_text(result: Any) -> str | None:
+    """The text a Copilot tool returned, from a ToolResult or its wire form."""
+    if result is None:
+        return None
+    if isinstance(result, dict):
+        text = result.get("textResultForLlm") or result.get("text_result_for_llm")
+        return str(text) if text else None
+    text = getattr(result, "text_result_for_llm", None)
+    return str(text) if text else None
 
 
 class CopilotEngineer(BaseEngineer):
@@ -64,6 +76,58 @@ class CopilotEngineer(BaseEngineer):
 
         return ask_user_question
 
+    async def _open_copilot_session(self, client: Any, **config: Any) -> Any:
+        """A new Copilot session, or the saved one when resuming: the Copilot CLI keeps sessions between runs."""
+        if self.resume_session:
+            session = await client.resume_session(self.resume_session, **config)
+        else:
+            session = await client.create_session(**config)
+        self._record_session(session.session_id)
+        return session
+
+    def _event_handler(self, done: asyncio.Event, errors: list[str]) -> Callable[[Any], None]:
+        """Streams a session's text, reasoning and usage into the UI; ``done`` is set once the session is idle.
+
+        The SDK may call this from another thread, hence ``call_soon_threadsafe`` for the event.
+        """
+        loop = asyncio.get_running_loop()
+
+        def on_event(event: Any) -> None:
+            kind = getattr(event.type, "value", str(event.type))
+            data = getattr(event, "data", None)
+            if kind == "assistant.message_delta":
+                delta = getattr(data, "delta_content", "") or ""
+                if delta and (stream_text := getattr(self.ui, "stream_text", None)):
+                    stream_text(delta)
+            elif kind == "assistant.reasoning_delta":
+                delta = getattr(data, "delta_content", "") or ""
+                if delta and (stream_thinking := getattr(self.ui, "stream_thinking", None)):
+                    stream_thinking(delta)
+            elif kind == "assistant.reasoning":
+                if (content := getattr(data, "content", "") or "") and (thinking_note := getattr(self.ui, "thinking_note", None)):
+                    thinking_note(content)
+            elif kind == "assistant.message":
+                content = getattr(data, "content", "") or ""
+                if content.strip():
+                    self.ui.thinking(content)
+                    self.message_store.save_thinking(content)
+            elif kind == "assistant.usage":
+                for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+                    value = getattr(data, key, None)
+                    if isinstance(value, int):
+                        self.usage_metadata[key] = self.usage_metadata.get(key, 0) + value
+            elif kind == "session.error":
+                errors.append(str(getattr(data, "message", "") or "Copilot session error"))
+                loop.call_soon_threadsafe(done.set)  # an error need not be followed by idle
+            elif kind == "session.compaction_start":
+                self.ui.console.print("  [dim]session compacting...[/dim]")
+            elif kind == "session.compaction_complete":
+                self.ui.console.print("  [dim]session compaction complete[/dim]")
+            elif kind == "session.idle":
+                loop.call_soon_threadsafe(done.set)
+
+        return on_event
+
     async def analyze_and_generate(self) -> dict[str, Any] | None:
         """Run the reverse engineering analysis with GitHub Copilot."""
         try:
@@ -78,67 +142,33 @@ class CopilotEngineer(BaseEngineer):
         self.ui.start_analysis()
 
         system_prompt, user_message = self._build_prompts()
-        prompt = f"{system_prompt}\n\n{user_message}"
-        self.message_store.save_prompt(user_message)
+        opening = await self._opening_message(user_message)
+        if not opening:
+            return {}
+        prompt = opening if self.resume_session else f"{system_prompt}\n\n{user_message}"
 
         done_event = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        accumulated_text: list[str] = []
-
-        def on_event(event: Any) -> None:
-            event_type = event.type.value if hasattr(event.type, "value") else str(event.type)
-
-            if event_type == "assistant.message_delta":
-                delta = ""
-                if hasattr(event, "data") and hasattr(event.data, "delta_content"):
-                    delta = event.data.delta_content or ""
-                if delta:
-                    accumulated_text.append(delta)
-                    self.ui.thinking(delta)
-
-            elif event_type == "assistant.message":
-                # Extract usage if available
-                if hasattr(event, "data") and hasattr(event.data, "usage"):
-                    usage = event.data.usage
-                    if isinstance(usage, dict):
-                        self.usage_metadata["input_tokens"] = usage.get("prompt_tokens", 0)
-                        self.usage_metadata["output_tokens"] = usage.get("completion_tokens", 0)
-
-            elif event_type == "session.idle":
-                # Use thread-safe call in case SDK invokes callback from a different thread
-                loop.call_soon_threadsafe(done_event.set)
-
-            elif event_type == "session.compaction_start":
-                self.ui.console.print("  [dim]session compacting...[/dim]")
-
-            elif event_type == "session.compaction_complete":
-                self.ui.console.print("  [dim]session compaction complete[/dim]")
+        errors: list[str] = []
 
         client = None
         try:
             ask_user_tool = self._build_ask_user_tool()
 
-            client = CopilotClient(
-                {
-                    "auto_start": True,
-                    "use_logged_in_user": True,
-                }
-            )
+            client = CopilotClient(use_logged_in_user=True)
             await client.start()
 
-            session = await client.create_session(
-                {
-                    "model": self.copilot_model,
-                    "streaming": True,
-                    "infinite_sessions": {"enabled": True},
-                    "tools": [ask_user_tool],
-                    "on_permission_request": PermissionHandler.approve_all,
-                }
+            session = await self._open_copilot_session(
+                client,
+                model=self.copilot_model,
+                streaming=True,
+                infinite_sessions={"enabled": True},
+                tools=[ask_user_tool],
+                on_permission_request=PermissionHandler.approve_all,
             )
 
-            session.on(on_event)
+            session.on(self._event_handler(done_event, errors))
 
-            await session.send({"prompt": prompt})
+            await session.send(prompt)
 
             # Wait for session to complete with timeout protection
             try:
@@ -148,9 +178,10 @@ class CopilotEngineer(BaseEngineer):
                 self.message_store.save_error("Session timed out")
                 return None
 
-            # Save accumulated thinking text
-            if accumulated_text:
-                self.message_store.save_thinking("".join(accumulated_text))
+            if errors:
+                self.ui.error(errors[-1])
+                self.message_store.save_error(errors[-1])
+                return None
 
             # Build result
             script_path = str(self.scripts_dir / self._get_client_filename())
@@ -159,6 +190,7 @@ class CopilotEngineer(BaseEngineer):
 
             # GitHub subscription: cost is $0 (included in Copilot subscription)
             self.usage_metadata["estimated_cost_usd"] = 0.0
+            self._report_usage()
 
             # Display usage if available
             input_tokens = self.usage_metadata.get("input_tokens", 0)
