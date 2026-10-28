@@ -1,6 +1,6 @@
 """Tests for tui.py, collector_ui.py, opencode_ui.py - UI modules."""
 
-from io import BytesIO, StringIO, TextIOWrapper
+from io import StringIO
 
 import pytest
 from rich.console import Console
@@ -9,8 +9,6 @@ from reverse_api.tui import (
     TOOL_COLORS,
     TOOL_ICONS,
     ClaudeUI,
-    display_banner,
-    display_footer,
     get_model_choices,
 )
 
@@ -334,7 +332,12 @@ class TestGetModelChoices:
     def test_includes_sonnet(self):
         """Includes Sonnet model."""
         values = [c["value"] for c in get_model_choices()]
-        assert "claude-sonnet-4-6" in values
+        assert "claude-sonnet-5-5" in values
+
+    def test_haiku_5_5_replaces_the_retired_models(self):
+        values = [c["value"] for c in get_model_choices()]
+        assert "claude-haiku-5-5" in values
+        assert "claude-sonnet-4-6" not in values and "claude-haiku-4-5" not in values
 
     def test_includes_opus(self):
         """Includes Opus model."""
@@ -342,45 +345,68 @@ class TestGetModelChoices:
         assert "claude-opus-4-6" in values
 
 
-class TestDisplayBanner:
-    """Test display_banner function."""
+class TestAgentTextIsNotMarkup:
+    """Agent, tool and site text can contain rich markup syntax; it must print literally."""
 
-    def test_basic_banner(self):
-        """Banner displays without error."""
-        console = Console(file=StringIO(), no_color=True)
-        display_banner(console)
-        output = console.file.getvalue()
-        assert "rae" in output
-        assert "Turn websites into APIs" in output
+    TRICKY = "GET /lst/[<make>]/[/<model>] [bold]x[/] [link=y]"
 
-    @pytest.mark.parametrize("encoding", ["ascii", "cp1252", "utf-8"])
-    def test_banner_with_encoded_output(self, encoding):
-        """Redirected output must render even with Windows' legacy encoding."""
-        buffer = BytesIO()
-        with TextIOWrapper(buffer, encoding=encoding) as stream:
-            console = Console(file=stream, no_color=True)
-            display_banner(console, sdk="claude", model="claude-sonnet-4-6")
-            stream.flush()
-            output = buffer.getvalue().decode(encoding)
-        assert "rae" in output
-        assert "claude-sonnet-4-6" in output
-        assert ("━━" if encoding == "utf-8" else "--") in output
+    def _console(self):
+        return Console(file=StringIO(), no_color=True, width=200)
 
-    def test_banner_with_sdk_and_model(self):
-        """Banner with SDK and model info."""
-        console = Console(file=StringIO(), no_color=True)
-        display_banner(console, sdk="claude", model="claude-sonnet-4-6")
-        output = console.file.getvalue()
-        assert "claude" in output
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda ui, t: ui.thinking(t),
+            lambda ui, t: ui.progress(t),
+            lambda ui, t: ui.tool_start("Bash", {"command": t}),
+            lambda ui, t: ui.tool_start("mcp__chrome-devtools__navigate_page", {"url": t}),
+            lambda ui, t: ui.tool_result("Bash", output=t),
+            lambda ui, t: ui.tool_result("mcp__chrome-devtools__list_network_requests", output=f"{t}\n{t}"),
+            lambda ui, t: ui.tool_result("Read", is_error=True, output=t),
+            lambda ui, t: ui.todo_updated([{"content": t, "status": "pending"}]),
+            lambda ui, t: ui.success(t, t),
+            lambda ui, t: ui.error(t),
+        ],
+    )
+    def test_claude_ui(self, call):
+        console = self._console()
+        ui = ClaudeUI(verbose=True)
+        ui.console = console
+        call(ui, self.TRICKY)
+        assert self.TRICKY in console.file.getvalue()
 
+    def test_session_header(self):
+        from reverse_api.tui import print_session_header
 
-class TestDisplayFooter:
-    """Test display_footer function."""
+        console = self._console()
+        print_session_header(console, "run1", self.TRICKY)
+        assert self.TRICKY in console.file.getvalue()
 
-    def test_footer(self):
-        """Footer displays version and time."""
-        console = Console(file=StringIO(), no_color=True)
-        display_footer(console)
-        output = console.file.getvalue()
-        assert "via cli" in output
-        assert "*" in output
+    def test_opencode_ui(self):
+        from reverse_api.opencode_ui import OpenCodeUI
+
+        console = self._console()
+        ui = OpenCodeUI(console=console)
+        ui.tool_start("bash", {"command": self.TRICKY[:50]})
+        ui.tool_result("bash", is_error=True, output=self.TRICKY)
+        ui.thinking(self.TRICKY * 2)
+        ui.permission_requested("bash", self.TRICKY)
+        ui.session_retry(2, self.TRICKY)
+        ui.error(self.TRICKY)
+        ui.error("[/oops] raw error that looks like markup")
+        out = console.file.getvalue()
+        assert self.TRICKY in out
+        assert "[/oops] raw error" in out
+
+    def test_collector_ui(self):
+        from reverse_api.collector_ui import CollectorUI
+
+        console = self._console()
+        ui = CollectorUI(verbose=True)
+        ui.console = console
+        ui.item_saved(self.TRICKY[:40])
+        ui.thinking(self.TRICKY * 2, max_length=200)
+        ui.tool_start("WebFetch", {"url": self.TRICKY[:40]})
+        ui.collection_complete(3, self.TRICKY)
+        ui.error(self.TRICKY)
+        assert console.file.getvalue().count(self.TRICKY) >= 3

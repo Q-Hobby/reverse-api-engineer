@@ -13,7 +13,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from copilot.types import PostToolUseHookInput, PostToolUseHookOutput, PreToolUseHookInput, PreToolUseHookOutput
+    from copilot import (
+        PostToolUseFailureHookInput,
+        PostToolUseFailureHookOutput,
+        PostToolUseHookInput,
+        PostToolUseHookOutput,
+        PreToolUseHookInput,
+        PreToolUseHookOutput,
+    )
 
 import httpx2 as httpx
 from claude_agent_sdk import (
@@ -33,7 +40,8 @@ from .agent_browser import (
 from .chrome_mcp import CHROME_DEVTOOLS_MCP_PACKAGE
 from .engineer import ClaudeEngineer
 from .opencode_engineer import OpenCodeEngineer, debug_log, format_error
-from .utils import build_sdk_env, get_har_dir, isolated_sdk_options
+from .repl.bridge import stream_options
+from .utils import SDK_MAX_BUFFER_SIZE, build_sdk_effort, build_sdk_env, build_sdk_settings, get_har_dir
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -228,7 +236,6 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 return None
 
         system_prompt, user_message = self._get_active_prompts()
-        self.message_store.save_prompt(user_message)
 
         # Every provider branch below needs the report_client_verified tool
         # available (see engineer.py's _build_verification_mcp_server) —
@@ -238,6 +245,7 @@ class ClaudeAutoEngineer(ClaudeEngineer):
 
         if self.agent_provider == "agent-browser":
             options = ClaudeAgentOptions(
+                max_buffer_size=SDK_MAX_BUFFER_SIZE,
                 system_prompt=system_prompt,
                 mcp_servers={"verification": verification_server},
                 # allowed_tools is an explicit allow-list here (unlike the
@@ -255,12 +263,16 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 cwd=str(self.scripts_dir.parent.parent),
                 model=self.model,
                 env=build_sdk_env(),
+            **build_sdk_settings(),
+            **build_sdk_effort(self.model),
+            **stream_options(self.model),
+            **self._resume_options(),
                 stderr=self._handle_cli_stderr,
-                **isolated_sdk_options(),
             )
         else:
             mcp_name, mcp_config = self._get_mcp_config()
             options = ClaudeAgentOptions(
+                max_buffer_size=SDK_MAX_BUFFER_SIZE,
                 system_prompt=system_prompt,
                 mcp_servers={mcp_name: mcp_config, "verification": verification_server},
                 permission_mode="bypassPermissions",
@@ -268,15 +280,21 @@ class ClaudeAutoEngineer(ClaudeEngineer):
                 cwd=str(self.scripts_dir.parent.parent),
                 model=self.model,
                 env=build_sdk_env(),
+            **build_sdk_settings(),
+            **build_sdk_effort(self.model),
+            **stream_options(self.model),
+            **self._resume_options(),
                 stderr=self._handle_cli_stderr,
-                **isolated_sdk_options(),
             )
 
         last_result: dict[str, Any] | None = None
 
         try:
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(user_message)
+                opening = await self._opening_message(user_message)
+                if not opening:
+                    return {}
+                await client.query(opening)
 
                 # Process initial response
                 last_result = await self._process_streaming_response(client)
@@ -431,8 +449,10 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
                 return None
 
         system_prompt, user_message = self._get_active_prompts()
-        active_prompt = f"{system_prompt}\n\n{user_message}"
-        self.message_store.save_prompt(user_message)
+        opening = await self._opening_message(user_message)
+        if not opening:
+            return {}
+        active_prompt = opening if self.resume_session else f"{system_prompt}\n\n{user_message}"
 
         try:
             auth = self._get_auth()
@@ -440,11 +460,7 @@ class OpenCodeAutoEngineer(OpenCodeEngineer):
                 if not await self._prepare_server(client):
                     return None
 
-                # Create session first
-                session_r = await client.post("/session", json={})
-                session_r.raise_for_status()
-                session_data = session_r.json()
-                self._session_id = session_data["id"]
+                self._session_id = await self._open_session(client)
                 self.opencode_ui.session_created(self._session_id)
 
                 mcp_config = self._get_opencode_mcp_config()
@@ -633,6 +649,8 @@ class CopilotAutoEngineer:
             )
             return None
 
+        from .copilot_engineer import tool_output_text
+
         eng = self._engineer
         eng.ui.header(eng.run_id, eng.prompt, eng.copilot_model, eng.sdk, mode="agent")
         eng.ui.start_analysis()
@@ -651,41 +669,17 @@ class CopilotAutoEngineer:
                 return None
 
         system_prompt, user_message = ClaudeAutoEngineer._build_auto_prompts(eng)
-        auto_prompt = f"{system_prompt}\n\n{user_message}"
-        eng.message_store.save_prompt(user_message)
+        opening = await eng._opening_message(user_message)
+        if not opening:
+            return {}
+        auto_prompt = opening if eng.resume_session else f"{system_prompt}\n\n{user_message}"
 
         done_event = asyncio.Event()
-        loop = asyncio.get_running_loop()
-        accumulated_text: list[str] = []
-
-        def on_event(event: Any) -> None:
-            event_type = event.type.value if hasattr(event.type, "value") else str(event.type)
-
-            if event_type == "assistant.message_delta":
-                delta = ""
-                if hasattr(event, "data") and hasattr(event.data, "delta_content"):
-                    delta = event.data.delta_content or ""
-                if delta:
-                    accumulated_text.append(delta)
-                    eng.ui.thinking(delta)
-            elif event_type == "assistant.message":
-                if hasattr(event, "data") and hasattr(event.data, "usage"):
-                    usage = event.data.usage
-                    if isinstance(usage, dict):
-                        eng.usage_metadata["input_tokens"] = usage.get("prompt_tokens", 0)
-                        eng.usage_metadata["output_tokens"] = usage.get("completion_tokens", 0)
-            elif event_type == "session.idle":
-                # Use thread-safe call in case SDK invokes callback from a different thread
-                loop.call_soon_threadsafe(done_event.set)
+        errors: list[str] = []
 
         client = None
         try:
-            client = CopilotClient(
-                {
-                    "auto_start": True,
-                    "use_logged_in_user": True,
-                }
-            )
+            client = CopilotClient(use_logged_in_user=True)
             await client.start()
 
             if self.agent_provider == "chrome-mcp":
@@ -732,30 +726,38 @@ class CopilotAutoEngineer:
                 eng.message_store.save_tool_start(tool_name, tool_args)
                 return {"permissionDecision": "allow", "modifiedArgs": tool_args}
 
-            async def on_post_tool_use(input: PostToolUseHookInput, invocation: dict[str, str]) -> PostToolUseHookOutput:
+            async def on_post_tool_use(input: PostToolUseHookInput, _invocation: dict[str, str]) -> PostToolUseHookOutput:
                 tool_name = input.get("toolName", "unknown")
-                is_error = invocation.get("resultType") == "error" if isinstance(invocation, dict) else False
-                output = invocation.get("result") if isinstance(invocation, dict) else None
-                eng.ui.tool_result(tool_name, is_error=is_error, output=str(output) if output else None)
-                eng.message_store.save_tool_result(tool_name, is_error, str(output) if output else None)
+                output = tool_output_text(input.get("toolResult"))
+                eng.ui.tool_result(tool_name, is_error=False, output=output)
+                eng.message_store.save_tool_result(tool_name, False, output)
                 return {}
 
-            session = await client.create_session(
-                {
-                    "model": eng.copilot_model,
-                    "streaming": True,
-                    "infinite_sessions": {"enabled": True},
-                    "mcp_servers": mcp_servers_payload,
-                    "on_permission_request": PermissionHandler.approve_all,
-                    "hooks": {
-                        "on_pre_tool_use": on_pre_tool_use,
-                        "on_post_tool_use": on_post_tool_use,
-                    },
-                }
+            async def on_post_tool_use_failure(
+                input: PostToolUseFailureHookInput, _invocation: dict[str, str]
+            ) -> PostToolUseFailureHookOutput:
+                tool_name = input.get("toolName", "unknown")
+                error = str(input.get("error") or "the tool failed")
+                eng.ui.tool_result(tool_name, is_error=True, output=error)
+                eng.message_store.save_tool_result(tool_name, True, error)
+                return {}
+
+            session = await eng._open_copilot_session(
+                client,
+                model=eng.copilot_model,
+                streaming=True,
+                infinite_sessions={"enabled": True},
+                mcp_servers=mcp_servers_payload,
+                on_permission_request=PermissionHandler.approve_all,
+                hooks={
+                    "on_pre_tool_use": on_pre_tool_use,
+                    "on_post_tool_use": on_post_tool_use,
+                    "on_post_tool_use_failure": on_post_tool_use_failure,
+                },
             )
 
-            session.on(on_event)
-            await session.send({"prompt": auto_prompt})
+            session.on(eng._event_handler(done_event, errors))
+            await session.send(auto_prompt)
 
             # Wait with timeout protection (10 minutes)
             try:
@@ -765,13 +767,16 @@ class CopilotAutoEngineer:
                 eng.message_store.save_error("Session timed out")
                 return None
 
-            if accumulated_text:
-                eng.message_store.save_thinking("".join(accumulated_text))
+            if errors:
+                eng.ui.error(errors[-1])
+                eng.message_store.save_error(errors[-1])
+                return None
 
             script_path = str(eng.scripts_dir / eng._get_client_filename())
             local_path = str(eng.local_scripts_dir / eng._get_client_filename()) if eng.local_scripts_dir else None
             eng.ui.success(script_path, local_path)
             eng.usage_metadata["estimated_cost_usd"] = 0.0
+            eng._report_usage()
 
             result: dict[str, Any] = {
                 "script_path": script_path,

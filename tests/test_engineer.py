@@ -724,6 +724,34 @@ class TestClaudeEngineerAnalyzeAndGenerate:
                 assert "estimated_cost_usd" in result["usage"]
 
     @pytest.mark.asyncio
+    async def test_follow_up_usage_sums_results_and_keeps_sdk_session_cost(self, tmp_path):
+        """ResultMessage.usage is per query and total_cost_usd is cumulative over the session."""
+        eng = self._make_engineer(tmp_path)
+
+        def turn(usage, total_cost):
+            assistant = self._make_assistant_message()
+            assistant.usage = {"input_tokens": 9_999, "cache_read_input_tokens": 9_999}
+            result = self._make_result_message()
+            result.usage = usage
+            result.total_cost_usd = total_cost
+
+            client = MagicMock()
+
+            async def receive():
+                yield assistant
+                yield result
+
+            client.receive_response = receive
+            return client
+
+        await eng._process_streaming_response(turn({"input_tokens": 10, "cache_read_input_tokens": 1_000}, 0.20))
+        await eng._process_streaming_response(turn({"input_tokens": 5, "cache_read_input_tokens": 700}, 0.31))
+
+        assert eng.usage_metadata["input_tokens"] == 15
+        assert eng.usage_metadata["cache_read_input_tokens"] == 1_700
+        assert eng.usage_metadata["estimated_cost_usd"] == 0.31
+
+    @pytest.mark.asyncio
     async def test_result_with_local_scripts_dir(self, tmp_path):
         """Result includes local path when local_scripts_dir is set."""
         eng = self._make_engineer(tmp_path)
@@ -1104,3 +1132,27 @@ class TestSdkEnvWiring:
         assert env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] == AUTOCOMPACT_PCT
         assert env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == AUTOCOMPACT_WINDOW
         assert env["CLAUDECODE"] == ""
+
+    @pytest.mark.asyncio
+    async def test_options_isolate_user_claude_settings(self, tmp_path):
+        eng = self._make_engineer(tmp_path)
+
+        mock_client = AsyncMock()
+
+        async def empty_receive():
+            return
+            yield
+
+        mock_client.receive_response = empty_receive
+
+        with patch("reverse_api.utils.get_config_path", return_value=tmp_path / "config.json"):
+            with patch("reverse_api.engineer.ClaudeAgentOptions") as mock_options:
+                with patch("reverse_api.engineer.ClaudeSDKClient") as mock_sdk:
+                    mock_sdk.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+                    mock_sdk.return_value.__aexit__ = AsyncMock(return_value=False)
+
+                    await eng.analyze_and_generate()
+
+        kwargs = mock_options.call_args.kwargs
+        assert kwargs["setting_sources"] == []
+        assert kwargs["strict_mcp_config"] is True

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -13,16 +14,21 @@ from claude_agent_sdk import (
     PermissionResultAllow,
     ResultMessage,
     SdkMcpTool,
+    StreamEvent,
+    SystemMessage,
     TextBlock,
+    ThinkingBlock,
     ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
     create_sdk_mcp_server,
     tool,
 )
 
 from .base_engineer import REPORT_CLIENT_VERIFIED_INSTRUCTION, BaseEngineer
-from .utils import build_sdk_env, is_context_overflow_error, isolated_sdk_options
+from .repl.bridge import stream_options
+from .utils import SDK_MAX_BUFFER_SIZE, build_sdk_effort, build_sdk_env, build_sdk_settings, is_context_overflow_error
 
 # Suppress claude_agent_sdk logs
 logging.getLogger("claude_agent_sdk").setLevel(logging.WARNING)
@@ -37,6 +43,15 @@ class ClaudeEngineer(BaseEngineer):
     # point, so no further query on the same client can succeed and the
     # follow-up loop must not offer another turn.
     _context_overflowed = False
+
+    def _note_session(self, message: Any) -> None:
+        sid = getattr(message, "session_id", None)
+        if sid is None and isinstance(message, SystemMessage):
+            sid = message.data.get("session_id")
+        self._record_session(sid)
+
+    def _resume_options(self) -> dict[str, Any]:
+        return {"resume": self.resume_session} if self.resume_session else {}
 
     def _print_context_overflow_help(self) -> None:
         """Explain a context-window overflow and how to continue."""
@@ -165,13 +180,41 @@ class ClaudeEngineer(BaseEngineer):
             else:
                 self.usage_metadata[key] = value
 
+    def _record_tool_results(self, blocks: list[Any]) -> None:
+        """Tool results come back in user messages: always logged for /messages, shown by the session."""
+        for block in blocks:
+            if isinstance(block, ToolResultBlock):
+                output = block.content
+                text = (
+                    "\n".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in output)
+                    if isinstance(output, list)
+                    else str(output or "")
+                )
+                name = self._tool_names.get(block.tool_use_id, "Tool")
+                saved = text if len(text) <= 20000 else f"{text[:20000]}\n[{len(text) - 20000} more characters not saved]"
+                self.message_store.save_tool_result(name, bool(block.is_error), saved)
+                if getattr(self.ui, "shows_tool_results", False):
+                    self.ui.tool_result(name, bool(block.is_error), text)
+
     async def _process_streaming_response(self, client: ClaudeSDKClient) -> dict[str, Any] | None:
         """Process a single streaming response from the SDK client.
 
         Returns a result dict on success, or None on error.
         """
         async for message in client.receive_response():
-            if hasattr(message, "usage") and isinstance(message.usage, dict):
+            self._note_session(message)
+            if isinstance(message, StreamEvent):
+                event = message.event
+                delta = event.get("delta") if event.get("type") == "content_block_delta" else None
+                if isinstance(delta, dict) and message.parent_tool_use_id is None:
+                    if delta.get("type") == "text_delta" and (stream_text := getattr(self.ui, "stream_text", None)):
+                        stream_text(delta.get("text", ""))
+                    elif delta.get("type") == "thinking_delta" and (stream_thinking := getattr(self.ui, "stream_thinking", None)):
+                        stream_thinking(delta.get("thinking", ""))
+                continue
+            # Only ResultMessage carries billable per-query totals; AssistantMessage.usage
+            # repeats for every content block of a response and would double count.
+            if isinstance(message, ResultMessage) and isinstance(message.usage, dict):
                 self._accumulate_usage(message.usage)
 
             if isinstance(message, AssistantMessage):
@@ -179,6 +222,8 @@ class ClaudeEngineer(BaseEngineer):
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
                         last_tool_name = block.name
+                        if tool_id := getattr(block, "id", None):
+                            self._tool_names[tool_id] = block.name
                         self.ui.tool_start(block.name, block.input)
                         self.message_store.save_tool_start(block.name, block.input)
                     elif isinstance(block, ToolResultBlock):
@@ -214,6 +259,11 @@ class ClaudeEngineer(BaseEngineer):
                     elif isinstance(block, TextBlock):
                         self.ui.thinking(block.text)
                         self.message_store.save_thinking(block.text)
+                    elif isinstance(block, ThinkingBlock) and (thinking_note := getattr(self.ui, "thinking_note", None)):
+                        thinking_note(block.thinking)
+
+            elif isinstance(message, UserMessage) and isinstance(message.content, list):
+                self._record_tool_results(message.content)
 
             elif isinstance(message, ResultMessage):
                 if message.is_error:
@@ -237,25 +287,20 @@ class ClaudeEngineer(BaseEngineer):
 
                         from .pricing import calculate_cost
 
-                        cost = calculate_cost(
-                            model_id=self.model,
-                            input_tokens=input_tokens,
-                            output_tokens=output_tokens,
-                            cache_creation_tokens=cache_creation_tokens,
-                            cache_read_tokens=cache_read_tokens,
+                        # total_cost_usd is the SDK's own figure, cumulative over the session, a resumed one included.
+                        cost = (
+                            max(0.0, float(message.total_cost_usd) - self.cost_before)
+                            if isinstance(message.total_cost_usd, (int, float))
+                            else calculate_cost(
+                                model_id=self.model,
+                                input_tokens=input_tokens,
+                                output_tokens=output_tokens,
+                                cache_creation_tokens=cache_creation_tokens,
+                                cache_read_tokens=cache_read_tokens,
+                            )
                         )
                         self.usage_metadata["estimated_cost_usd"] = cost
-
-                        self.ui.console.print("  [dim]Usage:[/dim]")
-                        if input_tokens > 0:
-                            self.ui.console.print(f"  [dim]  input: {input_tokens:,} tokens[/dim]")
-                        if cache_creation_tokens > 0:
-                            self.ui.console.print(f"  [dim]  cache creation: {cache_creation_tokens:,} tokens[/dim]")
-                        if cache_read_tokens > 0:
-                            self.ui.console.print(f"  [dim]  cache read: {cache_read_tokens:,} tokens[/dim]")
-                        if output_tokens > 0:
-                            self.ui.console.print(f"  [dim]  output: {output_tokens:,} tokens[/dim]")
-                        self.ui.console.print(f"  [dim]  total cost: ${cost:.4f}[/dim]")
+                        self.ui.usage(self.usage_metadata)
 
                     result: dict[str, Any] = {
                         "script_path": script_path,
@@ -281,25 +326,31 @@ class ClaudeEngineer(BaseEngineer):
         self._context_overflowed = False
 
         system_prompt, user_message = self._build_prompts()
-        self.message_store.save_prompt(user_message)
 
         options = ClaudeAgentOptions(
+            max_buffer_size=SDK_MAX_BUFFER_SIZE,
             system_prompt=system_prompt,
             permission_mode="acceptEdits",
             can_use_tool=self._handle_tool_permission,
             cwd=str(self.scripts_dir.parent.parent),
             model=self.model,
             env=build_sdk_env(),
+            **build_sdk_settings(),
+            **build_sdk_effort(self.model),
+            **stream_options(self.model),
+            **self._resume_options(),
             stderr=self._handle_cli_stderr,
             mcp_servers={"verification": self._build_verification_mcp_server()},
-            **isolated_sdk_options(),
         )
 
         last_result: dict[str, Any] | None = None
 
         try:
             async with ClaudeSDKClient(options=options) as client:
-                await client.query(user_message)
+                opening = await self._opening_message(user_message)
+                if not opening:
+                    return {}
+                await client.query(opening)
 
                 # Process initial response
                 last_result = await self._process_streaming_response(client)
@@ -328,6 +379,10 @@ class ClaudeEngineer(BaseEngineer):
         except KeyboardInterrupt:
             self.ui.console.print("\n  [dim]run aborted[/dim]")
             return last_result
+
+        except asyncio.CancelledError:
+            # Stopped from the session: the turns already done still reach history and the local copy.
+            return {**(last_result or {}), "error": "interrupted"}
 
         except Exception as e:
             self.ui.error(str(e))
@@ -363,8 +418,13 @@ def run_reverse_engineering(
     output_mode: str = "client",
     interactive: bool = True,
     json_event_sink: Any = None,
+    resume_session: str | None = None,
+    cost_before: float = 0.0,
+    on_session: Callable[[str], None] | None = None,
 ) -> dict[str, Any] | None:
     """Run reverse engineering with the specified SDK.
+
+    resume_session, cost_before and on_session reopen and record the SDK session, see BaseEngineer.
 
     Args:
         sdk: "claude", "opencode", "copilot", or "cursor" - determines which SDK to use
@@ -456,6 +516,7 @@ def run_reverse_engineering(
             output_mode=output_mode,
             interactive=interactive,
         )
+    engineer.resume_session, engineer.cost_before, engineer.on_session = resume_session, cost_before, on_session
 
     if json_event_sink is not None:
         from .json_stream import attach_json_stream_to_engineer

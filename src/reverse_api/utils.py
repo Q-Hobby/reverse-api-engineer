@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import uuid
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -63,20 +64,6 @@ _CONTEXT_OVERFLOW_MARKERS = (
 )
 
 
-# A full-page browser screenshot can exceed the SDK's 1 MB default and abort the session.
-SDK_MAX_BUFFER_SIZE = 32 * 1024 * 1024
-
-
-def isolated_sdk_options() -> dict[str, Any]:
-    """Claude Agent SDK options shared by every rae session.
-
-    strict_mcp_config keeps the user's own Claude Code MCP servers (for example a
-    personal chrome-devtools server) out of rae's sessions, so the agent only sees
-    the browser and tools rae registers.
-    """
-    return {"strict_mcp_config": True, "max_buffer_size": SDK_MAX_BUFFER_SIZE}
-
-
 def build_sdk_env() -> dict[str, str]:
     """Environment overrides for Claude Agent SDK subprocesses.
 
@@ -90,6 +77,64 @@ def build_sdk_env() -> dict[str, str]:
     if "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE" not in os.environ:
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = AUTOCOMPACT_PCT
     return env
+
+
+_CLAUDE_SETTING_SOURCES = ("user", "project", "local")
+_CLAUDE_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def predates_effort(model: str | None) -> bool:
+    """Haiku 4.5 came before the effort setting, so it never gets one."""
+    return (model or "").startswith("claude-haiku-4")
+
+
+def build_sdk_effort(model: str | None = None) -> dict[str, Any]:
+    """ClaudeAgentOptions kwargs for the configured ``claude_effort``; empty keeps the model default."""
+    if predates_effort(model):
+        return {}
+    try:
+        from .config import ConfigManager
+
+        effort = ConfigManager(get_config_path()).get("claude_effort")
+    except Exception:
+        effort = None
+    if effort in _CLAUDE_EFFORT_LEVELS:
+        return {"effort": effort}
+    if effort is not None:
+        warnings.warn(
+            f"claude_effort must be one of {list(_CLAUDE_EFFORT_LEVELS)}, got {effort!r}; using the model default",
+            stacklevel=2,
+        )
+    return {}
+
+
+# The SDK default (1 MB) aborts a run when a tool returns a large screenshot.
+SDK_MAX_BUFFER_SIZE = 32 * 1024 * 1024
+
+
+def build_sdk_settings() -> dict[str, Any]:
+    """ClaudeAgentOptions kwargs selecting which Claude Code settings the session loads.
+
+    Isolated by default: no filesystem settings and only the MCP servers RAE
+    passes, so the user's CLAUDE.md, hooks, plugins, MCP servers and permission
+    rules cannot change the agent. The ``claude_setting_sources`` config key
+    opts back into those layers; invalid values keep the session isolated.
+    """
+    try:
+        from .config import ConfigManager
+
+        sources = ConfigManager(get_config_path()).get("claude_setting_sources")
+    except Exception:
+        sources = None
+    if isinstance(sources, list) and sources and all(s in _CLAUDE_SETTING_SOURCES for s in sources):
+        return {"setting_sources": list(sources)}
+    if sources not in (None, []):
+        warnings.warn(
+            f"claude_setting_sources must list some of {list(_CLAUDE_SETTING_SOURCES)}, got {sources!r}; "
+            "the Claude session stays isolated",
+            stacklevel=2,
+        )
+    return {"setting_sources": [], "strict_mcp_config": True}
 
 
 def is_context_overflow_error(message: str) -> bool:
@@ -161,8 +206,14 @@ def generate_folder_name(prompt: str, sdk: str | None = None, session_id: str | 
         if sdk == "cursor":
             return _slugify(prompt)
 
+        from contextlib import nullcontext
+
+        from .repl.bridge import active
+
+        # The full-screen session has its own activity line; a rich spinner would only add noise to it.
         console = Console()
-        with Status(" [dim]generating folder name...[/dim]", console=console, spinner="dots", spinner_style="dim"):
+        spinner = nullcontext() if active() else Status(" [dim]generating folder name...[/dim]", console=console, spinner="dots", spinner_style="dim")
+        with spinner:
             if sdk == "opencode":
                 return asyncio.run(_generate_folder_name_opencode_async(prompt, session_id))
             return asyncio.run(_generate_folder_name_async(prompt))
@@ -189,10 +240,12 @@ async def _generate_folder_name_async(prompt: str) -> str:
     logging.getLogger("claude_agent_sdk._internal.transport.subprocess_cli").setLevel(logging.WARNING)
 
     options = ClaudeAgentOptions(
+        max_buffer_size=SDK_MAX_BUFFER_SIZE,
         allowed_tools=[],  # No tools needed for simple text generation
         permission_mode="dontAsk",
-        model="claude-haiku-4-5",
-        **isolated_sdk_options(),
+        model="claude-haiku-5-5",
+        effort="low",  # a folder name needs no reasoning
+        **build_sdk_settings(),
     )
 
     folder_name = ""
